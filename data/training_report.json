@@ -1,0 +1,255 @@
+{
+  "corpus_stats": {
+    "total_articles": 371,
+    "class_distribution": {
+      "negative": 306,
+      "positive": 65
+    },
+    "politicians": {
+      "Alberto Nunez Feijoo": 17,
+      "Benjamin Netanyahu": 24,
+      "Claudia Sheinbaum": 45,
+      "Donald Trump": 50,
+      "Emmanuel Macron": 26,
+      "Giorgia Meloni": 32,
+      "Gustavo Petro": 35,
+      "Javier Milei": 7,
+      "Joe Biden": 62,
+      "Kamala Harris": 15,
+      "Keir Starmer": 41,
+      "Volodymyr Zelenskyy": 17
+    }
+  },
+  "classical_model": {
+    "model": "TF-IDF (1-2gram) + LinearSVC (class_weight=balanced)",
+    "mode": "5-fold stratified cross-validation",
+    "cv_folds": 5,
+    "f1_macro_mean": 0.8419,
+    "f1_macro_std": 0.0372,
+    "accuracy": 0.9191,
+    "classification_report": {
+      "negative": {
+        "precision": 0.9259259259259259,
+        "recall": 0.9803921568627451,
+        "f1-score": 0.9523809523809523,
+        "support": 306.0
+      },
+      "positive": {
+        "precision": 0.8723404255319149,
+        "recall": 0.6307692307692307,
+        "f1-score": 0.7321428571428571,
+        "support": 65.0
+      },
+      "accuracy": 0.9191374663072777,
+      "macro avg": {
+        "precision": 0.8991331757289205,
+        "recall": 0.805580693815988,
+        "f1-score": 0.8422619047619047,
+        "support": 371.0
+      },
+      "weighted avg": {
+        "precision": 0.9165376307086464,
+        "recall": 0.9191374663072777,
+        "f1-score": 0.9137947631882941,
+        "support": 371.0
+      }
+    },
+    "confusion_matrix_path": "data/confusion_matrix_classical.png",
+    "per_politician": {
+      "Joe Biden": {
+        "accuracy": 1.0,
+        "n": 62,
+        "positive_articles": 12,
+        "negative_articles": 50
+      },
+      "Donald Trump": {
+        "accuracy": 0.92,
+        "n": 50,
+        "positive_articles": 7,
+        "negative_articles": 43
+      },
+      "Claudia Sheinbaum": {
+        "accuracy": 0.889,
+        "n": 45,
+        "positive_articles": 10,
+        "negative_articles": 35
+      },
+      "Keir Starmer": {
+        "accuracy": 0.902,
+        "n": 41,
+        "positive_articles": 6,
+        "negative_articles": 35
+      },
+      "Gustavo Petro": {
+        "accuracy": 0.914,
+        "n": 35,
+        "positive_articles": 3,
+        "negative_articles": 32
+      },
+      "Giorgia Meloni": {
+        "accuracy": 0.969,
+        "n": 32,
+        "positive_articles": 7,
+        "negative_articles": 25
+      },
+      "Emmanuel Macron": {
+        "accuracy": 0.923,
+        "n": 26,
+        "positive_articles": 2,
+        "negative_articles": 24
+      },
+      "Benjamin Netanyahu": {
+        "accuracy": 0.958,
+        "n": 24,
+        "positive_articles": 1,
+        "negative_articles": 23
+      },
+      "Alberto Nunez Feijoo": {
+        "accuracy": 0.882,
+        "n": 17,
+        "positive_articles": 5,
+        "negative_articles": 12
+      },
+      "Volodymyr Zelenskyy": {
+        "accuracy": 0.824,
+        "n": 17,
+        "positive_articles": 4,
+        "negative_articles": 13
+      },
+      "Kamala Harris": {
+        "accuracy": 0.733,
+        "n": 15,
+        "positive_articles": 7,
+        "negative_articles": 8
+      },
+      "Javier Milei": {
+        "accuracy": 0.857,
+        "n": 7,
+        "positive_articles": 1,
+        "negative_articles": 6
+      }
+    }
+  },
+  "transformer_model": {
+    "model": "distilbert-base-uncased-finetuned-sst-2-english",
+    "mode": "zero-shot inference (no fine-tuning, CPU)",
+    "accuracy": 0.8248,
+    "f1_macro": 0.7374,
+    "classification_report": {
+      "negative": {
+        "precision": 0.931899641577061,
+        "recall": 0.8496732026143791,
+        "f1-score": 0.8888888888888888,
+        "support": 306.0
+      },
+      "positive": {
+        "precision": 0.5,
+        "recall": 0.7076923076923077,
+        "f1-score": 0.5859872611464968,
+        "support": 65.0
+      },
+      "accuracy": 0.8247978436657682,
+      "macro avg": {
+        "precision": 0.7159498207885304,
+        "recall": 0.7786827551533434,
+        "f1-score": 0.7374380750176928,
+        "support": 371.0
+      },
+      "weighted avg": {
+        "precision": 0.8562298930527781,
+        "recall": 0.8247978436657682,
+        "f1-score": 0.835819870551273,
+        "support": 371.0
+      }
+    },
+    "confusion_matrix_path": "data/confusion_matrix_transformer.png",
+    "per_politician": {
+      "Joe Biden": {
+        "accuracy": 0.919,
+        "n": 62,
+        "positive_articles": 12,
+        "negative_articles": 50
+      },
+      "Donald Trump": {
+        "accuracy": 0.92,
+        "n": 50,
+        "positive_articles": 7,
+        "negative_articles": 43
+      },
+      "Claudia Sheinbaum": {
+        "accuracy": 0.778,
+        "n": 45,
+        "positive_articles": 10,
+        "negative_articles": 35
+      },
+      "Keir Starmer": {
+        "accuracy": 0.829,
+        "n": 41,
+        "positive_articles": 6,
+        "negative_articles": 35
+      },
+      "Gustavo Petro": {
+        "accuracy": 0.686,
+        "n": 35,
+        "positive_articles": 3,
+        "negative_articles": 32
+      },
+      "Giorgia Meloni": {
+        "accuracy": 0.844,
+        "n": 32,
+        "positive_articles": 7,
+        "negative_articles": 25
+      },
+      "Emmanuel Macron": {
+        "accuracy": 0.808,
+        "n": 26,
+        "positive_articles": 2,
+        "negative_articles": 24
+      },
+      "Benjamin Netanyahu": {
+        "accuracy": 0.875,
+        "n": 24,
+        "positive_articles": 1,
+        "negative_articles": 23
+      },
+      "Alberto Nunez Feijoo": {
+        "accuracy": 0.588,
+        "n": 17,
+        "positive_articles": 5,
+        "negative_articles": 12
+      },
+      "Volodymyr Zelenskyy": {
+        "accuracy": 0.824,
+        "n": 17,
+        "positive_articles": 4,
+        "negative_articles": 13
+      },
+      "Kamala Harris": {
+        "accuracy": 0.733,
+        "n": 15,
+        "positive_articles": 7,
+        "negative_articles": 8
+      },
+      "Javier Milei": {
+        "accuracy": 0.857,
+        "n": 7,
+        "positive_articles": 1,
+        "negative_articles": 6
+      }
+    }
+  },
+  "comparison": {
+    "winner_by_f1_macro": "classical",
+    "classical_accuracy": 0.9191,
+    "transformer_accuracy": 0.8248,
+    "classical_f1_macro": 0.8419,
+    "transformer_f1_macro": 0.7374,
+    "f1_macro_delta_classical_minus_transformer": 0.1045,
+    "accuracy_delta_classical_minus_transformer": 0.0943
+  },
+  "plots": {
+    "comparison": "data/comparison_plot.png",
+    "confusion_classical": "data/confusion_matrix_classical.png",
+    "confusion_transformer": "data/confusion_matrix_transformer.png"
+  }
+}
