@@ -1,0 +1,53 @@
+{
+  "clean_rows": 791,
+  "rows_by_politician": {
+    "Alberto Nunez Feijoo": 26,
+    "Benjamin Netanyahu": 37,
+    "Claudia Sheinbaum": 73,
+    "Donald Trump": 74,
+    "Emmanuel Macron": 43,
+    "Giorgia Meloni": 66,
+    "Gustavo Petro": 61,
+    "Javier Milei": 94,
+    "Joe Biden": 84,
+    "Kamala Harris": 66,
+    "Keir Starmer": 82,
+    "Volodymyr Zelenskyy": 85
+  },
+  "rows_by_tone": {
+    "negative": 306,
+    "positive": 65,
+    "unknown": 420
+  },
+  "schema_note": "El dataset limpio elimina duplicados por URL normalizada, puede filtrar por aliases del politico y añade un campo text que concatena title y content para modelado.",
+  "recommended_columns": [
+    "dataset_language",
+    "politician",
+    "title",
+    "url",
+    "domain",
+    "seendate",
+    "sourcecountry",
+    "language",
+    "socialimage",
+    "content",
+    "content_fetch_status",
+    "content_length_chars",
+    "content_length_words",
+    "gdelt_v2tone_raw",
+    "gdelt_tone_score",
+    "gdelt_tone_label",
+    "gdelt_positive_score",
+    "gdelt_negative_score",
+    "gdelt_polarity",
+    "gdelt_activity_reference_density",
+    "gdelt_self_group_reference_density",
+    "gdelt_word_count",
+    "gdelt_tone_source",
+    "query",
+    "normalized_url",
+    "text",
+    "mentioned_aliases",
+    "relevance_status"
+  ]
+}
