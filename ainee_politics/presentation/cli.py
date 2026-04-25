@@ -6,9 +6,14 @@ import argparse
 from pathlib import Path
 from typing import Sequence
 
-from ainee_politics.application import build_corpus, prepare_dataset
+from ainee_politics.application import build_corpus, label_corpus, prepare_dataset, train_model
 from ainee_politics.config import API_RETRIES, GDELT_MIN_INTERVAL_SECONDS, REQUEST_TIMEOUT
-from ainee_politics.domain.models import BuildCorpusSettings, PrepareDatasetSettings
+from ainee_politics.domain.models import (
+    BuildCorpusSettings,
+    LabelSettings,
+    PrepareDatasetSettings,
+    TrainingSettings,
+)
 
 
 def add_build_arguments(parser: argparse.ArgumentParser) -> None:
@@ -124,6 +129,73 @@ def run_prepare_dataset(namespace: argparse.Namespace) -> int:
     return 0
 
 
+def add_label_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--input", default="data/corpus_politicos_clean.jsonl", help="Ruta del corpus limpio en JSONL.")
+    parser.add_argument("--output-dir", default="data", help="Directorio de salida.")
+    parser.add_argument("--spacy-model", default="en_core_web_lg", help="Nombre del modelo spaCy a usar.")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size para nlp.pipe().")
+
+
+def add_train_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--input",
+        default="data/corpus_politicos_clean.jsonl",
+        help="JSONL de entrada (corpus limpio o etiquetado).",
+    )
+    parser.add_argument("--output-dir", default="data", help="Directorio de salida para reportes y gráficas.")
+    parser.add_argument("--cv-folds", type=int, default=5, help="Número de folds para validación cruzada estratificada.")
+    parser.add_argument(
+        "--max-features",
+        type=int,
+        default=10_000,
+        help="Número máximo de features TF-IDF.",
+    )
+    parser.add_argument(
+        "--transformer-model",
+        default="distilbert-base-uncased-finetuned-sst-2-english",
+        help="Identificador HuggingFace del modelo transformer para inferencia zero-shot.",
+    )
+    parser.add_argument(
+        "--text-max-chars",
+        type=int,
+        default=1500,
+        help="Caracteres máximos del texto enviados al transformer (para limitar tiempo en CPU).",
+    )
+
+
+def namespace_to_label_settings(namespace: argparse.Namespace) -> LabelSettings:
+    return LabelSettings(
+        input_path=Path(namespace.input),
+        output_dir=Path(namespace.output_dir),
+        spacy_model=namespace.spacy_model,
+        batch_size=namespace.batch_size,
+    )
+
+
+def namespace_to_train_settings(namespace: argparse.Namespace) -> TrainingSettings:
+    return TrainingSettings(
+        input_path=Path(namespace.input),
+        output_dir=Path(namespace.output_dir),
+        cv_folds=namespace.cv_folds,
+        max_tfidf_features=namespace.max_features,
+        transformer_model=namespace.transformer_model,
+        text_max_chars=namespace.text_max_chars,
+    )
+
+
+def run_label_corpus(namespace: argparse.Namespace) -> int:
+    out_jsonl, out_csv = label_corpus(namespace_to_label_settings(namespace))
+    print(f"[OK] LABELED JSONL: {out_jsonl}")
+    print(f"[OK] LABELED CSV:   {out_csv}")
+    return 0
+
+
+def run_train_model(namespace: argparse.Namespace) -> int:
+    report_path = train_model(namespace_to_train_settings(namespace))
+    print(f"[OK] REPORT: {report_path}")
+    return 0
+
+
 def build_main_parser() -> argparse.ArgumentParser:
     """Create the main multi-command parser used by `main.py`."""
 
@@ -145,6 +217,21 @@ def build_main_parser() -> argparse.ArgumentParser:
     )
     add_prepare_arguments(prepare_parser)
     prepare_parser.set_defaults(handler=run_prepare_dataset)
+
+    label_parser = subparsers.add_parser(
+        "label-corpus",
+        help="Enriquece el corpus limpio con anotaciones spaCy: NER, adjetivos por político, estadísticas de frases.",
+    )
+    add_label_arguments(label_parser)
+    label_parser.set_defaults(handler=run_label_corpus)
+
+    train_parser = subparsers.add_parser(
+        "train-model",
+        help="Entrena y evalúa TF-IDF+LinearSVC vs DistilBERT (zero-shot) para clasificación de tono.",
+    )
+    add_train_arguments(train_parser)
+    train_parser.set_defaults(handler=run_train_model)
+
     return parser
 
 

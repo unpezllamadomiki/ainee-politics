@@ -79,3 +79,33 @@ class PrepareDatasetSettings:
     allow_empty_content: bool = False
     min_content_chars: int = 200
     use_alias_filter: bool = True
+
+
+LABELED_SCHEMA_COLUMNS = CLEAN_SCHEMA_COLUMNS + [
+    "spacy_entities",
+    "politician_adjectives",
+    "sentence_count",
+    "avg_sentence_length",
+]
+
+
+@dataclass(frozen=True)
+class LabelSettings:
+    """Runtime configuration for the spaCy NLP enrichment step."""
+
+    input_path: Path
+    output_dir: Path
+    spacy_model: str = "en_core_web_lg"
+    batch_size: int = 32
+
+
+@dataclass(frozen=True)
+class TrainingSettings:
+    """Runtime configuration for the tone-classification training pipeline."""
+
+    input_path: Path
+    output_dir: Path
+    cv_folds: int = 5
+    max_tfidf_features: int = 10_000
+    transformer_model: str = "distilbert-base-uncased-finetuned-sst-2-english"
+    text_max_chars: int = 1500
