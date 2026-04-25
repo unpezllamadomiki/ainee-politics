@@ -84,6 +84,9 @@ class PrepareDatasetSettings:
 LABELED_SCHEMA_COLUMNS = CLEAN_SCHEMA_COLUMNS + [
     "spacy_entities",
     "politician_adjectives",
+    "politician_tone_score",
+    "politician_tone_label",
+    "politician_tone_n_sentences",
     "sentence_count",
     "avg_sentence_length",
 ]

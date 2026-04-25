@@ -8,8 +8,10 @@ from typing import Any
 
 from ainee_politics.domain.models import TrainingSettings
 from ainee_politics.infrastructure.nlp.classifier import (
+    compute_label_agreement,
     evaluate_transformer,
     per_politician_stats,
+    save_bias_landscape_plot,
     save_comparison_plot,
     train_classical,
 )
@@ -22,7 +24,11 @@ _SEP = "=" * 62
 def train_model(settings: TrainingSettings) -> Path:
     """Train TF-IDF+LinearSVC and evaluate DistilBERT (zero-shot) on tone classification.
 
-    Both models predict ``gdelt_tone_label`` (positive | negative) from ``text``.
+    Auto-detects the best available tone label:
+    - ``politician_tone_label`` (preferred): VADER on politician-mentioning sentences,
+      produced by the ``label-corpus`` step.  More precise for bias detection.
+    - ``gdelt_tone_label`` (fallback): article-level tone from GDELT.
+
     Outputs a verbose console report, PNG confusion matrices, a comparison plot,
     and a JSON report to ``settings.output_dir/training_report.json``.
     """
@@ -35,21 +41,54 @@ def train_model(settings: TrainingSettings) -> Path:
     if not rows:
         raise ValueError(f"No se encontraron filas en {settings.input_path}")
 
-    valid = [r for r in rows if r.get("gdelt_tone_label") in _VALID_LABELS]
+    # Auto-detect tone label field
+    has_politician_tone = any(
+        r.get("politician_tone_label") in _VALID_LABELS for r in rows
+    )
+    if has_politician_tone:
+        tone_field = "politician_tone_label"
+        print(
+            "[INFO] Usando 'politician_tone_label' (VADER sobre frases con el político).\n"
+            "       Esta etiqueta refleja cómo se retrata al político específicamente."
+        )
+    else:
+        tone_field = "gdelt_tone_label"
+        print(
+            "[AVISO] 'politician_tone_label' no encontrado — usando 'gdelt_tone_label' (tono del artículo completo).\n"
+            "        Para mejor precisión, ejecuta primero: python main.py label-corpus"
+        )
+
+    valid = [r for r in rows if r.get(tone_field) in _VALID_LABELS]
     if len(valid) < 20:
         raise ValueError(
-            f"Solo {len(valid)} artículos con etiqueta positivo/negativo. "
+            f"Solo {len(valid)} artículos con etiqueta positivo/negativo en '{tone_field}'. "
             "Construye un corpus más grande antes de entrenar."
         )
 
     texts = [r.get("text") or r.get("content") or "" for r in valid]
-    labels = [r["gdelt_tone_label"] for r in valid]
+    labels = [r[tone_field] for r in valid]
 
     label_counts = {l: labels.count(l) for l in _VALID_LABELS}
     politicians = sorted({r["politician"] for r in valid})
     pol_counts = {p: sum(1 for r in valid if r["politician"] == p) for p in politicians}
 
-    _print_corpus_summary(len(valid), label_counts, pol_counts)
+    # Full label distribution (all rows, including excluded)
+    all_tone_labels = [r.get(tone_field, "no_politician_sentences") for r in rows]
+    excluded = len(rows) - len(valid)
+    full_label_dist: dict[str, int] = {}
+    for lbl in all_tone_labels:
+        full_label_dist[lbl] = full_label_dist.get(lbl, 0) + 1
+
+    # Per-politician full distribution (for bias landscape and JSON report)
+    full_pol_dist: dict[str, dict[str, int]] = {}
+    for row in rows:
+        pol = row.get("politician", "unknown")
+        lbl = row.get(tone_field, "no_politician_sentences")
+        if pol not in full_pol_dist:
+            full_pol_dist[pol] = {}
+        full_pol_dist[pol][lbl] = full_pol_dist[pol].get(lbl, 0) + 1
+
+    _print_corpus_summary(len(valid), label_counts, pol_counts, tone_field, excluded, full_label_dist)
 
     # ------------------------------------------------------------------
     # Model 1: classical TF-IDF + LinearSVC
@@ -66,7 +105,7 @@ def train_model(settings: TrainingSettings) -> Path:
         max_features=settings.max_tfidf_features,
         output_dir=settings.output_dir,
     )
-    classical_per_pol = per_politician_stats(valid, classical_preds)
+    classical_per_pol = per_politician_stats(valid, labels, classical_preds)
     classical_results["per_politician"] = classical_per_pol
     _print_model_report(classical_results, per_pol=classical_per_pol)
 
@@ -87,7 +126,7 @@ def train_model(settings: TrainingSettings) -> Path:
         output_dir=settings.output_dir,
         text_max_chars=settings.text_max_chars,
     )
-    transformer_per_pol = per_politician_stats(valid, transformer_preds)
+    transformer_per_pol = per_politician_stats(valid, labels, transformer_preds)
     transformer_results["per_politician"] = transformer_per_pol
     _print_model_report(transformer_results, per_pol=transformer_per_pol)
 
@@ -97,7 +136,7 @@ def train_model(settings: TrainingSettings) -> Path:
     comparison = _build_comparison(classical_results, transformer_results)
     _print_comparison(comparison)
 
-    # Comparison plot (overall + per-politician)
+    # Comparison plot (overall metrics + per-politician accuracy)
     plot_path = save_comparison_plot(
         classical=classical_results,
         transformer=transformer_results,
@@ -106,19 +145,38 @@ def train_model(settings: TrainingSettings) -> Path:
         output_dir=settings.output_dir,
     )
 
+    # Bias landscape (full corpus — primary research output)
+    landscape_path = save_bias_landscape_plot(
+        all_rows=rows,
+        tone_field=tone_field,
+        output_dir=settings.output_dir,
+    )
+
+    # Label agreement between politician_tone and gdelt_tone
+    agreement = compute_label_agreement(rows)
+    if agreement:
+        _print_label_agreement(agreement)
+
     # ------------------------------------------------------------------
     # Save JSON report
     # ------------------------------------------------------------------
     report: dict[str, Any] = {
         "corpus_stats": {
-            "total_articles": len(valid),
-            "class_distribution": label_counts,
-            "politicians": pol_counts,
+            "tone_label_field": tone_field,
+            "total_labeled_articles": len(rows),
+            "used_for_training": len(valid),
+            "excluded_from_training": excluded,
+            "full_label_distribution": full_label_dist,
+            "training_class_distribution": label_counts,
+            "per_politician_full_distribution": full_pol_dist,
+            "per_politician_training": pol_counts,
         },
+        "label_agreement_gdelt_vs_politician": agreement,
         "classical_model": classical_results,
         "transformer_model": transformer_results,
         "comparison": comparison,
         "plots": {
+            "bias_landscape": str(landscape_path),
             "comparison": str(plot_path),
             "confusion_classical": classical_results["confusion_matrix_path"],
             "confusion_transformer": transformer_results["confusion_matrix_path"],
@@ -131,10 +189,11 @@ def train_model(settings: TrainingSettings) -> Path:
         encoding="utf-8",
     )
 
-    print(f"\n[OK] Reporte JSON  → {report_path}")
-    print(f"[OK] Gráfica comp  → {plot_path}")
-    print(f"[OK] CM clásico    → {classical_results['confusion_matrix_path']}")
-    print(f"[OK] CM transformer → {transformer_results['confusion_matrix_path']}")
+    print(f"\n[OK] Sesgo por político → {landscape_path}")
+    print(f"[OK] Comparación modelos → {plot_path}")
+    print(f"[OK] CM clásico         → {classical_results['confusion_matrix_path']}")
+    print(f"[OK] CM transformer      → {transformer_results['confusion_matrix_path']}")
+    print(f"[OK] Reporte JSON        → {report_path}")
     return report_path
 
 
@@ -143,21 +202,47 @@ def train_model(settings: TrainingSettings) -> Path:
 # ---------------------------------------------------------------------------
 
 def _print_corpus_summary(
-    total: int,
+    total_train: int,
     label_counts: dict[str, int],
     pol_counts: dict[str, int],
+    tone_field: str,
+    excluded: int,
+    full_label_dist: dict[str, int],
 ) -> None:
+    total_all = total_train + excluded
     print(f"\n{_SEP}")
     print("  RESUMEN DEL CORPUS")
     print(_SEP)
-    print(f"  Total artículos (positive + negative): {total}")
-    for label, count in sorted(label_counts.items()):
-        pct = count / total * 100 if total else 0
+    print(f"  Etiqueta de tono        : {tone_field}")
+    print(f"  Total artículos en fichero : {total_all}")
+    print(f"  Usados en entrenamiento    : {total_train}  ({total_train/total_all*100:.1f}%)")
+    print(f"  Excluidos (neutral/sin mención) : {excluded}  ({excluded/total_all*100:.1f}%)")
+    print(f"\n  Distribución completa (todos los artículos):")
+    for lbl in ("positive", "negative", "neutral", "no_politician_sentences"):
+        count = full_label_dist.get(lbl, 0)
+        pct = count / total_all * 100 if total_all else 0
         bar = "█" * int(pct / 2)
-        print(f"    {label:10s}: {count:5d}  ({pct:5.1f}%)  {bar}")
-    print(f"\n  Artículos por político:")
+        print(f"    {lbl:<25s}: {count:5d}  ({pct:5.1f}%)  {bar}")
+    print(f"\n  Artículos de entrenamiento por político:")
     for pol, n in sorted(pol_counts.items(), key=lambda x: -x[1]):
         print(f"    {pol:<30s}: {n}")
+
+
+def _print_label_agreement(agreement: dict) -> None:
+    print(f"\n{_SEP}")
+    print("  ACUERDO: politician_tone_label vs gdelt_tone_label")
+    print(_SEP)
+    rate = agreement["agreement_rate"]
+    print(f"  Artículos comparables : {agreement['n_comparable']}")
+    print(f"  Coinciden             : {agreement['n_agree']}  ({rate*100:.1f}%)")
+    print(f"  No coinciden          : {agreement['n_comparable'] - agreement['n_agree']}  ({(1-rate)*100:.1f}%)")
+    print(f"  → {agreement['interpretation']}")
+    if agreement.get("disagreement_examples"):
+        print(f"\n  Ejemplos de desacuerdo:")
+        for ex in agreement["disagreement_examples"]:
+            print(f"    [{ex['politician']}]  gdelt={ex['gdelt']}  politician_tone={ex['politician_tone']}")
+            print(f"      \"{ex['title']}\"")
+    print(_SEP)
 
 
 def _print_model_report(results: dict[str, Any], per_pol: dict[str, dict]) -> None:
