@@ -170,35 +170,47 @@ Notas de uso:
 
 ```text
 main.py
-app.py                          ← dashboard Streamlit
+app.py                          ← app Streamlit: dashboard, predicción y chatbot RAG
 ainee_politics/
     config.py
     domain/
         catalog.py              ← 12 políticos internacionales (editable)
         models.py               ← dataclasses de settings y esquemas de columnas
     application/
+        summaries.py            ← helpers para resumir métricas y resultados
         use_cases/
-            build_corpus.py
-            prepare_dataset.py
-            label_corpus.py
-            train_model.py
-            compare_llm.py
+            build_corpus.py     ← descarga y consolida noticias desde GDELT
+            prepare_dataset.py  ← limpieza, deduplicación y filtrado del corpus
+            label_corpus.py     ← etiquetado de tono y enriquecimiento NLP
+            train_model.py      ← entrenamiento clásico + transformer + reporte
+            compare_llm.py      ← evaluación zero-shot con Ollama
     infrastructure/
         gdelt/
-            client.py
-            query_builder.py
-            tone.py
+            client.py           ← cliente HTTP a GDELT
+            query_builder.py    ← construcción de consultas por político/ventana
+            tone.py             ← normalización del tono GDELT
         storage/
-            dataset_store.py
+            dataset_store.py    ← lectura/escritura de JSONL, CSV y checkpoints
         text/
-            article_extractor.py
-            normalization.py
+            article_extractor.py ← extracción de título, cuerpo y metadatos
+            normalization.py     ← normalización textual previa al pipeline
         nlp/
             spacy_processor.py  ← NER + VADER por entidad
             classifier.py       ← TF-IDF+LinearSVC, fine-tuning transformer, LOPO, LLM eval
             rag.py              ← Chroma + embeddings + respuestas RAG sobre el corpus
     presentation/
-        cli.py
+        cli.py                  ← comandos build-corpus, prepare-dataset, label-corpus, train-model, compare-llm
+data/
+    corpus_politicos_en.*       ← exportación cruda/normalizada desde GDELT
+    corpus_politicos_clean.*    ← corpus limpio listo para etiquetar
+    corpus_labeled.*            ← corpus etiquetado para entrenamiento y RAG
+    training_report.json        ← métricas agregadas que consume el dashboard
+    classical_model.joblib      ← pipeline TF-IDF + LinearSVC persistido
+    finetuned_model/            ← transformer fine-tuned para inferencia
+    chroma_politics_news/       ← índice vectorial persistido del chatbot RAG
+    confusion_matrix_*.png      ← matrices de confusión generadas en evaluación
+    comparison_plot.png         ← comparación visual entre enfoques
+    bias_landscape.png          ← paisaje de sesgo por político/medio
 ```
 
 ---
