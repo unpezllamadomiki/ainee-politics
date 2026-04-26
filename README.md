@@ -129,7 +129,7 @@ Añade la sección `llm_model` al `training_report.json` y genera `confusion_mat
 
 ## Dashboard Streamlit
 
-Visualiza resultados y realiza predicciones en tiempo real:
+Visualiza resultados, realiza predicciones en tiempo real y consulta el corpus con un chatbot RAG:
 
 ```bash
 streamlit run app.py
@@ -137,6 +137,32 @@ streamlit run app.py
 
 - **Tab Dashboard:** métricas por modelo, bias landscape, matrices de confusión, accuracy por político, evaluación LOPO
 - **Tab Predicción:** pega una URL o texto, selecciona el político, y ambos modelos predicen el tono
+- **Tab Chatbot RAG:** permite preguntar sobre el corpus de noticias y devuelve respuesta con fuentes
+
+### Chatbot RAG
+
+El chat usa un índice vectorial persistido en `data/chroma_politics_news/` construido a partir de `data/corpus_labeled.jsonl`.
+Si el índice ya existe, la app lo reutiliza; si no existe, lo crea al abrir la pestaña del chatbot.
+
+Capacidades principales:
+- Resumir noticias recientes de un político concreto
+- Responder preguntas apoyadas en fragmentos recuperados del corpus
+- Listar directamente en qué noticias aparece un político
+
+Ejemplos de preguntas:
+- `Resume las noticias recientes sobre Donald Trump`
+- `¿En qué noticias aparece Emmanuel Macron?`
+- `¿Qué dice el corpus sobre Claudia Sheinbaum?`
+
+Requisitos:
+- Tener `data/corpus_labeled.jsonl` generado
+- Tener Ollama instalado y el modelo descargado, por ejemplo `ollama pull llama3.1:8b`
+- Ejecutar `streamlit run app.py`
+
+Notas de uso:
+- El filtro de político en la UI limita la recuperación a ese político cuando es posible
+- Las respuestas muestran tarjetas de fuente con título, medio, fecha, tono y URL
+- El índice Chroma es regenerable y no se versiona en git
 
 ---
 
@@ -170,6 +196,7 @@ ainee_politics/
         nlp/
             spacy_processor.py  ← NER + VADER por entidad
             classifier.py       ← TF-IDF+LinearSVC, fine-tuning transformer, LOPO, LLM eval
+            rag.py              ← Chroma + embeddings + respuestas RAG sobre el corpus
     presentation/
         cli.py
 ```
