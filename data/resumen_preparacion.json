@@ -1,23 +1,24 @@
 {
-  "clean_rows": 791,
+  "clean_rows": 2104,
   "rows_by_politician": {
     "Alberto Nunez Feijoo": 26,
-    "Benjamin Netanyahu": 37,
-    "Claudia Sheinbaum": 73,
-    "Donald Trump": 74,
-    "Emmanuel Macron": 43,
-    "Giorgia Meloni": 66,
-    "Gustavo Petro": 61,
-    "Javier Milei": 94,
-    "Joe Biden": 84,
-    "Kamala Harris": 66,
-    "Keir Starmer": 82,
-    "Volodymyr Zelenskyy": 85
+    "Benjamin Netanyahu": 102,
+    "Claudia Sheinbaum": 196,
+    "Donald Trump": 190,
+    "Emmanuel Macron": 147,
+    "Giorgia Meloni": 189,
+    "Gustavo Petro": 145,
+    "Javier Milei": 218,
+    "Joe Biden": 171,
+    "Kamala Harris": 114,
+    "Keir Starmer": 206,
+    "Vladimir Putin": 201,
+    "Volodymyr Zelenskyy": 199
   },
   "rows_by_tone": {
-    "negative": 306,
-    "positive": 65,
-    "unknown": 420
+    "negative": 850,
+    "positive": 156,
+    "unknown": 1098
   },
   "schema_note": "El dataset limpio elimina duplicados por URL normalizada, puede filtrar por aliases del politico y añade un campo text que concatena title y content para modelado.",
   "recommended_columns": [
