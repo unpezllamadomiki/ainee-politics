@@ -1,18 +1,19 @@
 {
-  "dataset_en": 1147,
+  "dataset_en": 3047,
   "en_by_politician": {
     "Alberto Nunez Feijoo": 47,
-    "Benjamin Netanyahu": 100,
-    "Claudia Sheinbaum": 100,
-    "Donald Trump": 100,
-    "Emmanuel Macron": 100,
-    "Giorgia Meloni": 100,
-    "Gustavo Petro": 100,
-    "Javier Milei": 100,
-    "Joe Biden": 100,
-    "Kamala Harris": 100,
-    "Keir Starmer": 100,
-    "Volodymyr Zelenskyy": 100
+    "Benjamin Netanyahu": 250,
+    "Claudia Sheinbaum": 250,
+    "Donald Trump": 250,
+    "Emmanuel Macron": 250,
+    "Giorgia Meloni": 250,
+    "Gustavo Petro": 250,
+    "Javier Milei": 250,
+    "Joe Biden": 250,
+    "Kamala Harris": 250,
+    "Keir Starmer": 250,
+    "Vladimir Putin": 250,
+    "Volodymyr Zelenskyy": 250
   },
   "schema_note": "Cada fila representa una noticia recuperada desde la DOC API de GDELT. El campo content se extrae automaticamente desde la URL y el tono por articulo se enlaza desde GDELT GKG usando la URL y el seendate de la noticia. La deduplicacion normaliza URLs para reducir variantes equivalentes.",
   "recommended_columns": [
