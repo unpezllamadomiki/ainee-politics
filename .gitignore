@@ -4,6 +4,18 @@ __pycache__/
 *.pyo
 *.pyd
 
+# Model weights (too large for git; regenerate with train-model)
+data/finetuned_model/
+data/finetune_checkpoints/
+data/*.joblib
+
+# Corpus data (regenerate with build-corpus / prepare-dataset)
+data/*.jsonl
+data/*.csv
+
+# Keep plots and training report
+!data/*.png
+!data/training_report.json
 
 .DS_Store
 Thumbs.db

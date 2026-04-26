@@ -1,93 +1,162 @@
 # Ainee Politics
 
-Proyecto modular para construir un corpus político en inglés usando GDELT DOC API y GDELT GKG, etiquetarlo con análisis de sentimiento orientado a entidades, y entrenar modelos de clasificación de tono para detección de sesgo en medios.
+Proyecto modular para construir un corpus de noticias políticas en inglés usando [GDELT](https://www.gdeltproject.org/), etiquetarlo con análisis de sentimiento orientado a entidades y entrenar modelos de clasificación de tono para detección de sesgo mediático.
 
 ## Objetivo
 
-Detectar sesgo en noticias digitales sobre políticos internacionales analizando cómo los medios retratan a cada político (tono positivo o negativo en las frases que lo mencionan directamente).
+Detectar sesgo en noticias digitales sobre políticos internacionales analizando cómo los medios retratan a cada político: tono positivo o negativo en las frases que lo mencionan directamente.
+
+## Resultados (última ejecución)
+
+| Modelo | F1-Macro (test) | Accuracy (test) |
+|---|---|---|
+| TF-IDF + LinearSVC | **0.8561** | **0.8596** |
+| RoBERTa (fine-tuned, 3 epochs) | 0.7623 | 0.7632 |
+| Llama 3.1 8B zero-shot (Ollama) | 0.5529 | 0.6053 |
+
+- **Corpus:** 570 artículos binarios (positive/negative), 12 políticos, split 80/20 compartido entre modelos
+- **Evaluación cross-político (LOPO):** F1-Macro medio = 0.5231 — el modelo depende de señales específicas por político, generalización limitada
 
 ## Pipeline completo
 
 ```
-build-corpus → prepare-dataset → label-corpus → train-model
+build-corpus → prepare-dataset → label-corpus → train-model → [compare-llm]
 ```
 
-### Paso 1 — Construir corpus crudo
+`label-corpus` y `compare-llm` son opcionales.
+
+---
+
+## Instalación
+
+```bash
+python -m venv .venv
+
+# Linux / macOS
+source .venv/bin/activate
+# Windows
+.\.venv\Scripts\Activate.ps1
+
+pip install -r requirements.txt
+python -m spacy download en_core_web_lg
+```
+
+Para `compare-llm` se necesita [Ollama](https://ollama.com) instalado localmente:
+
+```bash
+ollama pull llama3.1:8b
+```
+
+Para fine-tuning con GPU (recomendado), instalar PyTorch con soporte CUDA:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu126
+```
+
+---
+
+## Paso 1 — Construir corpus crudo
 
 Descarga artículos de GDELT, extrae el contenido HTML y enriquece con el tono V2Tone del GKG:
 
-```powershell
-# Prueba rápida (~5-10 min)
+```bash
+# Prueba rápida (~5-10 min, 5 políticos × 20 artículos)
 python main.py build-corpus --max-politicians 5 --max-records 20 --timespan 30d
 
-# Corpus completo (~1-2h, recomendado para entrenar)
+# Corpus completo (~1-2h)
 python main.py build-corpus --max-records 100 --timespan 3m --checkpoint-every 10
 ```
 
 Salida: `data/corpus_politicos_en.jsonl`, `data/corpus_politicos_en.csv`, `data/resumen_politicos_api.json`
 
-### Paso 2 — Limpiar y preparar dataset
+## Paso 2 — Limpiar y preparar dataset
 
 Deduplica, filtra por calidad de contenido y exige que el político aparezca en el texto:
 
-```powershell
+```bash
 python main.py prepare-dataset --input data/corpus_politicos_en.jsonl --min-content-chars 200
 ```
 
 Salida: `data/corpus_politicos_clean.jsonl`, `data/corpus_politicos_clean.csv`, `data/resumen_preparacion.json`
 
-### Paso 3 — Etiquetar con NLP (spaCy + VADER)
+## Paso 3 — Etiquetar con NLP (spaCy + VADER)
 
-Enriquece el corpus limpio con anotaciones lingüísticas y calcula el tono hacia el político específicamente:
+Enriquece el corpus con anotaciones lingüísticas y calcula el tono hacia el político específicamente:
 
-```powershell
+```bash
 python main.py label-corpus --input data/corpus_politicos_clean.jsonl
 ```
 
-Este paso añade a cada artículo:
-- `politician_tone_label` — tono de las frases que mencionan al político (`positive` / `negative` / `neutral` / `no_politician_sentences`), calculado con VADER
+Añade a cada artículo:
+- `politician_tone_label` — tono de las frases que mencionan al político (`positive` / `negative` / `neutral`)
 - `politician_tone_score` — puntuación compuesta promedio (-1 a +1)
-- `politician_tone_n_sentences` — número de frases analizadas
-- `spacy_entities` — entidades nombradas detectadas (PERSON, ORG, GPE, NORP…)
-- `politician_adjectives` — modificadores sintácticos directos del político (dependencias `amod`/`appos`)
-- `sentence_count`, `avg_sentence_length` — estadísticas de estructura textual
+- `spacy_entities` — entidades nombradas (PERSON, ORG, GPE…)
+- `politician_adjectives` — modificadores sintácticos directos del político
+- `sentence_count`, `avg_sentence_length`
 
 Salida: `data/corpus_labeled.jsonl`, `data/corpus_labeled.csv`
 
-> Requiere el modelo spaCy en inglés: `python -m spacy download en_core_web_lg`
+## Paso 4 — Entrenar y comparar modelos
 
-### Paso 4 — Entrenar y comparar modelos
+Entrena TF-IDF + LinearSVC y hace fine-tuning de un transformer (RoBERTa por defecto) sobre el mismo split 80/20:
 
-Entrena un clasificador clásico (TF-IDF + LinearSVC) y evalúa un transformer preentrenado (DistilBERT, zero-shot) sobre la tarea de clasificación de tono hacia el político:
-
-```powershell
+```bash
 python main.py train-model --input data/corpus_labeled.jsonl
+
+# Sin GPU / sin fine-tuning
+python main.py train-model --input data/corpus_labeled.jsonl --no-finetune
 ```
 
-Si se ejecuta sobre el corpus limpio sin etiquetar, usa automáticamente `gdelt_tone_label` como fallback e informa en consola.
-
 Salida en `data/`:
-- `bias_landscape.png` — distribución de tono positivo/negativo/neutral por político en todo el corpus (output principal de investigación)
-- `comparison_plot.png` — accuracy y F1-macro de ambos modelos + accuracy por político
+- `training_report.json` — métricas completas, distribución por clase y político, LOPO
+- `classical_model.joblib` — pipeline TF-IDF+LinearSVC para inferencia
+- `finetuned_model/` — modelo transformer fine-tuneado para inferencia
+- `bias_landscape.png` — distribución de tono por político (output principal de investigación)
+- `comparison_plot.png` — comparación visual de modelos
 - `confusion_matrix_classical.png`, `confusion_matrix_transformer.png`
-- `training_report.json` — métricas completas, distribución por clase y político, acuerdo entre etiquetas GDELT y VADER
+
+## Paso 5 — Comparar con LLM local (opcional)
+
+Evalúa Llama 3.1 8B (u otro modelo Ollama) sobre el mismo test set:
+
+```bash
+python main.py compare-llm --input data/corpus_labeled.jsonl --ollama-model llama3.1:8b
+```
+
+Añade la sección `llm_model` al `training_report.json` y genera `confusion_matrix_llm.png`.
+
+---
+
+## Dashboard Streamlit
+
+Visualiza resultados y realiza predicciones en tiempo real:
+
+```bash
+streamlit run app.py
+```
+
+- **Tab Dashboard:** métricas por modelo, bias landscape, matrices de confusión, accuracy por político, evaluación LOPO
+- **Tab Predicción:** pega una URL o texto, selecciona el político, y ambos modelos predicen el tono
+
+---
 
 ## Arquitectura
 
 ```text
 main.py
+app.py                          ← dashboard Streamlit
 ainee_politics/
     config.py
     domain/
-        catalog.py          ← 19 políticos internacionales (editable)
-        models.py           ← dataclasses de settings y esquemas de columnas
+        catalog.py              ← 12 políticos internacionales (editable)
+        models.py               ← dataclasses de settings y esquemas de columnas
     application/
-        summaries.py
         use_cases/
             build_corpus.py
             prepare_dataset.py
             label_corpus.py
             train_model.py
+            compare_llm.py
     infrastructure/
         gdelt/
             client.py
@@ -99,50 +168,56 @@ ainee_politics/
             article_extractor.py
             normalization.py
         nlp/
-            spacy_processor.py  ← NER + extracción de adjetivos + VADER por entidad
-            classifier.py       ← TF-IDF+LinearSVC, DistilBERT zero-shot, plots
+            spacy_processor.py  ← NER + VADER por entidad
+            classifier.py       ← TF-IDF+LinearSVC, fine-tuning transformer, LOPO, LLM eval
     presentation/
         cli.py
 ```
 
-## Requisitos
-
-- Python 3.11 o superior
-- Dependencias: `pip install -r requirements.txt`
-- Modelo spaCy: `python -m spacy download en_core_web_lg`
-- Sin API keys — GDELT es público
-
-## Instalación
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python -m spacy download en_core_web_lg
-```
+---
 
 ## Parámetros principales
 
 ### build-corpus
-- `--max-politicians` — limita el número de políticos procesados (útil para pruebas)
-- `--max-records` — artículos máximos por político
-- `--timespan` — ventana temporal de GDELT: `7d`, `30d`, `3m`, `6m`
-- `--checkpoint-every` — guarda progreso cada N artículos
-- `--gdelt-min-interval` — segundos entre peticiones a GDELT (no reducir, hay rate limit)
+| Flag | Defecto | Descripción |
+|---|---|---|
+| `--max-politicians` | 0 (todos) | Limita el número de políticos (útil para pruebas) |
+| `--max-records` | 75 | Artículos máximos por político |
+| `--timespan` | `30d` | Ventana temporal GDELT: `7d`, `30d`, `3m`, `6m` |
+| `--checkpoint-every` | 10 | Guarda progreso cada N artículos |
 
 ### prepare-dataset
-- `--min-content-chars` — mínimo de caracteres en el cuerpo del artículo (defecto: 200)
-- `--keep-neutral` — conserva artículos con `gdelt_tone_label = neutral`
-- `--disable-alias-filter` — no exige que el político aparezca en el texto
+| Flag | Defecto | Descripción |
+|---|---|---|
+| `--min-content-chars` | 200 | Mínimo de caracteres en el cuerpo del artículo |
+| `--keep-neutral` | false | Conserva artículos con tono neutral |
+| `--disable-alias-filter` | false | No exige que el político aparezca en el texto |
 
 ### train-model
-- `--cv-folds` — folds de validación cruzada estratificada (defecto: 5)
-- `--max-features` — features máximas del vectorizador TF-IDF (defecto: 10 000)
-- `--transformer-model` — modelo HuggingFace para inferencia zero-shot
-- `--text-max-chars` — caracteres máximos enviados al transformer (defecto: 1500)
+| Flag | Defecto | Descripción |
+|---|---|---|
+| `--transformer-model` | `distilbert-base-uncased` | Modelo HuggingFace base para fine-tuning |
+| `--no-finetune` | false | Desactiva fine-tuning (usa el modelo en modo zero-shot) |
+| `--finetune-epochs` | 3 | Epochs de fine-tuning |
+| `--finetune-batch-size` | 16 | Batch size para fine-tuning |
+| `--finetune-lr` | 2e-5 | Learning rate |
+| `--finetune-test-size` | 0.2 | Fracción reservada para test (mismo split para ambos modelos) |
+| `--cv-folds` | 5 | Folds de validación cruzada del TF-IDF |
+| `--max-features` | 10 000 | Features máximas del vectorizador TF-IDF |
+
+### compare-llm
+| Flag | Defecto | Descripción |
+|---|---|---|
+| `--ollama-model` | `llama3.1:8b` | Nombre del modelo en Ollama |
+| `--test-size` | 0.2 | Debe coincidir con el valor usado en `train-model` |
+
+---
 
 ## Notas
 
-- GDELT aplica rate limiting de ~5 segundos entre peticiones. No reducir `--gdelt-min-interval`.
-- `politician_tone_label` (VADER por frases) es más preciso que `gdelt_tone_label` (V2Tone del artículo completo) para el objetivo de detección de sesgo, porque mide cómo se retrata al político específicamente, no el tono general del artículo.
-- La carpeta `data/` no se versiona para evitar subir datasets grandes al repositorio.
+- GDELT aplica rate limiting de ~5 segundos. No reducir `--gdelt-min-interval`.
+- `politician_tone_label` (VADER por frases) es más preciso que `gdelt_tone_label` (V2Tone del artículo completo) porque mide cómo se retrata al político específicamente.
+- El fine-tuning con GPU (CUDA) es significativamente más rápido (~15 min vs varias horas en CPU).
+- Los modelos entrenados (`finetuned_model/`, `*.joblib`) no se versionan en git — son regenerables con `train-model`.
+- Para añadir políticos: editar `DEFAULT_POLITICIANS` en `domain/catalog.py`.
+- Sin API keys — GDELT es completamente público.

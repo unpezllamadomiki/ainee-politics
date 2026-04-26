@@ -6,11 +6,12 @@ import argparse
 from pathlib import Path
 from typing import Sequence
 
-from ainee_politics.application import build_corpus, label_corpus, prepare_dataset, train_model
+from ainee_politics.application import build_corpus, compare_llm, label_corpus, prepare_dataset, train_model
 from ainee_politics.config import API_RETRIES, GDELT_MIN_INTERVAL_SECONDS, REQUEST_TIMEOUT
 from ainee_politics.domain.models import (
     BuildCorpusSettings,
     LabelSettings,
+    LLMCompareSettings,
     PrepareDatasetSettings,
     TrainingSettings,
 )
@@ -152,14 +153,43 @@ def add_train_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--transformer-model",
-        default="distilbert-base-uncased-finetuned-sst-2-english",
-        help="Identificador HuggingFace del modelo transformer para inferencia zero-shot.",
+        default="distilbert-base-uncased",
+        help="Identificador HuggingFace del modelo transformer base para fine-tuning.",
     )
     parser.add_argument(
         "--text-max-chars",
         type=int,
         default=1500,
-        help="Caracteres máximos del texto enviados al transformer (para limitar tiempo en CPU).",
+        help="Caracteres máximos del texto enviados al transformer.",
+    )
+    parser.add_argument(
+        "--no-finetune",
+        action="store_true",
+        help="Desactiva el fine-tuning y usa el modelo transformer en modo zero-shot.",
+    )
+    parser.add_argument(
+        "--finetune-epochs",
+        type=int,
+        default=3,
+        help="Número de epochs para el fine-tuning del transformer.",
+    )
+    parser.add_argument(
+        "--finetune-batch-size",
+        type=int,
+        default=16,
+        help="Batch size para fine-tuning del transformer.",
+    )
+    parser.add_argument(
+        "--finetune-lr",
+        type=float,
+        default=2e-5,
+        help="Learning rate para fine-tuning del transformer.",
+    )
+    parser.add_argument(
+        "--finetune-test-size",
+        type=float,
+        default=0.2,
+        help="Fracción de datos reservados para el test set durante el fine-tuning (0.0-1.0).",
     )
 
 
@@ -180,6 +210,11 @@ def namespace_to_train_settings(namespace: argparse.Namespace) -> TrainingSettin
         max_tfidf_features=namespace.max_features,
         transformer_model=namespace.transformer_model,
         text_max_chars=namespace.text_max_chars,
+        finetune=not namespace.no_finetune,
+        finetune_epochs=namespace.finetune_epochs,
+        finetune_batch_size=namespace.finetune_batch_size,
+        finetune_lr=namespace.finetune_lr,
+        finetune_test_size=namespace.finetune_test_size,
     )
 
 
@@ -192,6 +227,30 @@ def run_label_corpus(namespace: argparse.Namespace) -> int:
 
 def run_train_model(namespace: argparse.Namespace) -> int:
     report_path = train_model(namespace_to_train_settings(namespace))
+    print(f"[OK] REPORT: {report_path}")
+    return 0
+
+
+def add_llm_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--input", default="data/corpus_labeled.jsonl", help="JSONL de entrada (corpus etiquetado).")
+    parser.add_argument("--output-dir", default="data", help="Directorio de salida.")
+    parser.add_argument("--ollama-model", default="llama3.1:8b", help="Nombre del modelo Ollama a usar.")
+    parser.add_argument("--text-max-chars", type=int, default=1500, help="Caracteres máximos del texto enviados al LLM.")
+    parser.add_argument("--test-size", type=float, default=0.2, help="Fracción del dataset usada como test (debe coincidir con train-model).")
+
+
+def namespace_to_llm_settings(namespace: argparse.Namespace) -> LLMCompareSettings:
+    return LLMCompareSettings(
+        input_path=Path(namespace.input),
+        output_dir=Path(namespace.output_dir),
+        ollama_model=namespace.ollama_model,
+        text_max_chars=namespace.text_max_chars,
+        test_size=namespace.test_size,
+    )
+
+
+def run_compare_llm(namespace: argparse.Namespace) -> int:
+    report_path = compare_llm(namespace_to_llm_settings(namespace))
     print(f"[OK] REPORT: {report_path}")
     return 0
 
@@ -231,6 +290,13 @@ def build_main_parser() -> argparse.ArgumentParser:
     )
     add_train_arguments(train_parser)
     train_parser.set_defaults(handler=run_train_model)
+
+    llm_parser = subparsers.add_parser(
+        "compare-llm",
+        help="Evalúa un LLM local (Ollama) en el mismo test set que train-model y añade resultados al reporte.",
+    )
+    add_llm_arguments(llm_parser)
+    llm_parser.set_defaults(handler=run_compare_llm)
 
     return parser
 

@@ -9,16 +9,26 @@ from typing import Any
 from ainee_politics.domain.models import TrainingSettings
 from ainee_politics.infrastructure.nlp.classifier import (
     compute_label_agreement,
+    cross_politician_eval,
     evaluate_transformer,
     per_politician_stats,
     save_bias_landscape_plot,
     save_comparison_plot,
     train_classical,
+    train_transformer_finetuned,
 )
 from ainee_politics.infrastructure.storage.dataset_store import ensure_output_dir, read_jsonl
 
 _VALID_LABELS = {"positive", "negative"}
 _SEP = "=" * 62
+
+
+def _has_cuda() -> bool:
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
 
 
 def train_model(settings: TrainingSettings) -> Path:
@@ -91,52 +101,99 @@ def train_model(settings: TrainingSettings) -> Path:
     _print_corpus_summary(len(valid), label_counts, pol_counts, tone_field, excluded, full_label_dist)
 
     # ------------------------------------------------------------------
+    # Global 80/20 split — shared by both models for fair comparison
+    # ------------------------------------------------------------------
+    from sklearn.model_selection import train_test_split as _global_split
+
+    all_indices = list(range(len(valid)))
+    train_idx, test_idx = _global_split(
+        all_indices,
+        test_size=settings.finetune_test_size,
+        stratify=labels,
+        random_state=42,
+    )
+    train_texts  = [texts[i]  for i in train_idx]
+    train_labels = [labels[i] for i in train_idx]
+    test_texts   = [texts[i]  for i in test_idx]
+    test_labels  = [labels[i] for i in test_idx]
+
+    print(f"\n  Split global: {len(train_texts)} train / {len(test_texts)} test (mismo para ambos modelos)")
+
+    # ------------------------------------------------------------------
     # Model 1: classical TF-IDF + LinearSVC
     # ------------------------------------------------------------------
     print(f"\n{_SEP}")
     print("  MODELO 1 / 2 — TF-IDF (1-2gram) + LinearSVC")
-    print(f"  {settings.cv_folds}-fold stratified cross-validation")
+    print(f"  {settings.cv_folds}-fold CV en train split + evaluación en test compartido")
     print(_SEP)
 
-    classical_results, classical_preds = train_classical(
-        texts=texts,
-        labels=labels,
+    classical_results, classical_preds, classical_test_preds = train_classical(
+        texts=train_texts,
+        labels=train_labels,
         cv_folds=settings.cv_folds,
         max_features=settings.max_tfidf_features,
         output_dir=settings.output_dir,
+        test_texts=test_texts,
+        test_labels=test_labels,
     )
-    classical_per_pol = per_politician_stats(valid, labels, classical_preds)
+    # Reconstruct predictions in original order (train_idx + test_idx ≠ 0..N)
+    classical_preds_aligned = [""] * len(valid)
+    for orig_i, pred in zip(train_idx, classical_preds):
+        classical_preds_aligned[orig_i] = pred
+    for orig_i, pred in zip(test_idx, classical_test_preds):
+        classical_preds_aligned[orig_i] = pred
+    classical_per_pol = per_politician_stats(valid, labels, classical_preds_aligned)
     classical_results["per_politician"] = classical_per_pol
     _print_model_report(classical_results, per_pol=classical_per_pol)
 
     # ------------------------------------------------------------------
-    # Model 2: DistilBERT zero-shot
+    # Model 2: transformer (fine-tuned o zero-shot)
     # ------------------------------------------------------------------
     print(f"\n{_SEP}")
     print(f"  MODELO 2 / 2 — {settings.transformer_model}")
-    print("  Zero-shot inference en CPU (sin fine-tuning)")
-    print("  Nota: este modelo fue entrenado sobre SST-2 (reseñas de cine),")
-    print("  no sobre noticias políticas — diferencia esperada de dominio.")
+    if settings.finetune:
+        cuda_available = _has_cuda()
+        device_str = "GPU (CUDA)" if cuda_available else "CPU"
+        print(f"  Modo: fine-tuning  |  Dispositivo: {device_str}")
+        print(f"  Epochs: {settings.finetune_epochs}  |  Batch: {settings.finetune_batch_size}  |  LR: {settings.finetune_lr}")
+        print(f"  Test split: {int(settings.finetune_test_size * 100)}% (mismo split que TF-IDF)")
+    else:
+        print("  Modo: zero-shot (sin fine-tuning)")
     print(_SEP)
 
-    transformer_results, transformer_preds = evaluate_transformer(
-        texts=texts,
-        labels=labels,
-        model_name=settings.transformer_model,
-        output_dir=settings.output_dir,
-        text_max_chars=settings.text_max_chars,
-    )
+    if settings.finetune:
+        transformer_results, transformer_preds = train_transformer_finetuned(
+            texts=texts,
+            labels=labels,
+            model_name=settings.transformer_model,
+            output_dir=settings.output_dir,
+            epochs=settings.finetune_epochs,
+            batch_size=settings.finetune_batch_size,
+            lr=settings.finetune_lr,
+            test_size=settings.finetune_test_size,
+            text_max_chars=settings.text_max_chars,
+            provided_train_idx=train_idx,
+            provided_test_idx=test_idx,
+        )
+    else:
+        transformer_results, transformer_preds = evaluate_transformer(
+            texts=texts,
+            labels=labels,
+            model_name=settings.transformer_model,
+            output_dir=settings.output_dir,
+            text_max_chars=settings.text_max_chars,
+        )
     transformer_per_pol = per_politician_stats(valid, labels, transformer_preds)
     transformer_results["per_politician"] = transformer_per_pol
     _print_model_report(transformer_results, per_pol=transformer_per_pol)
 
     # ------------------------------------------------------------------
-    # Comparison
+    # Comparison (using shared test-set metrics)
     # ------------------------------------------------------------------
     comparison = _build_comparison(classical_results, transformer_results)
     _print_comparison(comparison)
 
-    # Comparison plot (overall metrics + per-politician accuracy)
+    # Comparison plot
     plot_path = save_comparison_plot(
         classical=classical_results,
         transformer=transformer_results,
@@ -158,6 +215,23 @@ def train_model(settings: TrainingSettings) -> Path:
         _print_label_agreement(agreement)
 
     # ------------------------------------------------------------------
+    # Cross-politician (leave-one-politician-out) evaluation
+    # ------------------------------------------------------------------
+    print(f"\n{_SEP}")
+    print("  EVALUACIÓN CROSS-POLÍTICO (leave-one-politician-out)")
+    print("  Entrena sin el político X, evalúa en X — mide generalización real")
+    print(_SEP)
+    pol_list = [r["politician"] for r in valid]
+    lopo_results = cross_politician_eval(
+        texts=texts,
+        labels=labels,
+        politicians=pol_list,
+        max_features=settings.max_tfidf_features,
+        cv_per_pol=classical_per_pol,
+    )
+    _print_lopo_results(lopo_results)
+
+    # ------------------------------------------------------------------
     # Save JSON report
     # ------------------------------------------------------------------
     report: dict[str, Any] = {
@@ -170,11 +244,14 @@ def train_model(settings: TrainingSettings) -> Path:
             "training_class_distribution": label_counts,
             "per_politician_full_distribution": full_pol_dist,
             "per_politician_training": pol_counts,
+            "train_size": len(train_idx),
+            "test_size": len(test_idx),
         },
         "label_agreement_gdelt_vs_politician": agreement,
         "classical_model": classical_results,
         "transformer_model": transformer_results,
         "comparison": comparison,
+        "cross_politician_eval": lopo_results,
         "plots": {
             "bias_landscape": str(landscape_path),
             "comparison": str(plot_path),
@@ -291,40 +368,64 @@ def _print_model_report(results: dict[str, Any], per_pol: dict[str, dict]) -> No
 
 
 def _build_comparison(classical: dict, transformer: dict) -> dict[str, Any]:
-    c_acc = classical.get("accuracy", 0.0)
-    t_acc = transformer.get("accuracy", 0.0)
-    c_f1 = classical.get("f1_macro_mean", 0.0)
-    t_f1 = transformer.get("f1_macro", 0.0)
+    # Prefer shared test-set metrics for fair apples-to-apples comparison
+    c_f1  = classical.get("test_set_f1_macro")  or classical.get("f1_macro_mean", 0.0)
+    c_acc = classical.get("test_set_accuracy")   or classical.get("accuracy", 0.0)
+    t_f1  = transformer.get("f1_macro",  0.0)
+    t_acc = transformer.get("accuracy",  0.0)
     winner = "classical" if c_f1 >= t_f1 else "transformer"
+    short = transformer.get("model", "Transformer").split("/")[-1]
+    mode  = transformer.get("mode", "")
+    t_label = f"{short} (fine-tuned)" if "fine-tuned" in mode else f"{short} (zero-shot)"
     return {
         "winner_by_f1_macro": winner,
-        "classical_accuracy": c_acc,
-        "transformer_accuracy": t_acc,
-        "classical_f1_macro": c_f1,
-        "transformer_f1_macro": t_f1,
+        "transformer_label": t_label,
+        "note": "Métricas comparadas sobre el mismo test set (20% compartido)",
+        "classical_test_accuracy":  c_acc,
+        "transformer_accuracy":     t_acc,
+        "classical_test_f1_macro":  c_f1,
+        "transformer_f1_macro":     t_f1,
+        "classical_cv_f1_macro":    classical.get("f1_macro_mean", 0.0),
         "f1_macro_delta_classical_minus_transformer": round(c_f1 - t_f1, 4),
         "accuracy_delta_classical_minus_transformer": round(c_acc - t_acc, 4),
     }
 
 
 def _print_comparison(comp: dict) -> None:
-    delta_f1 = comp["f1_macro_delta_classical_minus_transformer"]
+    delta_f1  = comp["f1_macro_delta_classical_minus_transformer"]
     delta_acc = comp["accuracy_delta_classical_minus_transformer"]
-    winner = comp["winner_by_f1_macro"].upper()
+    winner    = comp["winner_by_f1_macro"].upper()
+    t_label   = comp.get("transformer_label", "Transformer")
 
     print(f"\n{_SEP}")
-    print("  COMPARACIÓN FINAL")
+    print("  COMPARACIÓN FINAL  (mismo test set 20% — comparación justa)")
     print(_SEP)
     print(f"  {'Modelo':<40} {'Accuracy':>10}  {'F1-Macro':>9}")
     print(f"  {'-'*60}")
-    print(f"  {'TF-IDF + LinearSVC':<40} {comp['classical_accuracy']:>10.4f}  {comp['classical_f1_macro']:>9.4f}")
-    print(f"  {'DistilBERT (zero-shot)':<40} {comp['transformer_accuracy']:>10.4f}  {comp['transformer_f1_macro']:>9.4f}")
+    print(f"  {'TF-IDF + LinearSVC (test set)':<40} {comp['classical_test_accuracy']:>10.4f}  {comp['classical_test_f1_macro']:>9.4f}")
+    print(f"  {'TF-IDF + LinearSVC (CV en train)':<40} {'':>10}  {comp['classical_cv_f1_macro']:>9.4f}")
+    print(f"  {t_label:<40} {comp['transformer_accuracy']:>10.4f}  {comp['transformer_f1_macro']:>9.4f}")
     print(f"  {'-'*60}")
     sign = "+" if delta_f1 >= 0 else ""
-    print(f"  Delta (clásico - transformer)  F1={sign}{delta_f1:.4f}  Acc={sign}{delta_acc:.4f}")
-    print(f"\n  >>> Ganador por F1-Macro: {winner} <<<")
-    if winner == "CLASSICAL":
-        print("  Interpretar: el modelo entrenado en dominio supera al transformer general.")
-    else:
-        print("  Interpretar: el transformer generaliza mejor que el modelo entrenado.")
+    print(f"  Delta test (clásico - transformer)  F1={sign}{delta_f1:.4f}  Acc={sign}{delta_acc:.4f}")
+    print(f"\n  >>> Ganador por F1-Macro (test): {winner} <<<")
+    print(_SEP)
+
+
+def _print_lopo_results(lopo: dict) -> None:
+    per_pol = lopo.get("per_politician", {})
+    mean_f1 = lopo.get("mean_lopo_f1")
+    print(f"\n  F1-Macro medio LOPO: {mean_f1:.4f}" if mean_f1 else "")
+    print(f"  {lopo.get('interpretation', '')}")
+    print(f"\n  {'Político':<30} {'LOPO F1':>8} {'LOPO Acc':>9} {'Within Acc':>11} {'Drop':>6} {'n':>4}")
+    print(f"  {'-'*70}")
+    for pol, s in sorted(per_pol.items(), key=lambda x: x[1].get("generalization_drop", 0), reverse=True):
+        drop = s.get("generalization_drop", "—")
+        within = s.get("within_dist_accuracy", "—")
+        drop_str  = f"{drop:>+.3f}" if isinstance(drop, float) else f"{'—':>6}"
+        within_str = f"{within:.3f}" if isinstance(within, float) else "—"
+        print(
+            f"  {pol:<30} {s['lopo_f1_macro']:>8.3f} {s['lopo_accuracy']:>9.3f}"
+            f" {within_str:>11} {drop_str:>6} {s['n_test']:>4}"
+        )
     print(_SEP)

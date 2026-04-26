@@ -48,8 +48,13 @@ def train_classical(
     cv_folds: int,
     max_features: int,
     output_dir: Path,
+    test_texts: list[str] | None = None,
+    test_labels: list[str] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Train TF-IDF (1-2gram) + LinearSVC and evaluate with stratified CV.
+
+    If test_texts/test_labels are provided (shared global split), also evaluates
+    on that held-out set so the comparison with the transformer is apple-to-apple.
 
     Returns (metrics_dict, y_pred_aligned_with_input).
     """
@@ -66,10 +71,7 @@ def train_classical(
 
     cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
 
-    # F1-macro across folds for headline score
     cv_scores = cross_val_score(pipeline, texts, labels, cv=cv, scoring="f1_macro")
-
-    # Full predictions for per-class and per-politician analysis
     y_pred = list(cross_val_predict(pipeline, texts, labels, cv=cv))
 
     acc = accuracy_score(labels, y_pred)
@@ -80,17 +82,44 @@ def train_classical(
     cm_path = output_dir / "confusion_matrix_classical.png"
     _save_confusion_matrix(cm, label_names, cm_path, "TF-IDF (1-2gram) + LinearSVC")
 
+    # Fit on train split, evaluate on held-out test set if provided
+    pipeline.fit(texts, labels)
+
+    test_metrics: dict[str, Any] = {}
+    test_preds: list[str] = []
+    if test_texts and test_labels:
+        test_preds = list(pipeline.predict(test_texts))
+        t_acc = accuracy_score(test_labels, test_preds)
+        t_f1  = f1_score(test_labels, test_preds, average="macro", zero_division=0)
+        t_rep = classification_report(test_labels, test_preds, output_dict=True, zero_division=0)
+        test_metrics = {
+            "test_set_accuracy":               round(float(t_acc), 4),
+            "test_set_f1_macro":               round(float(t_f1),  4),
+            "test_set_size":                   len(test_texts),
+            "test_set_classification_report":  t_rep,
+        }
+
+    # Refit on all data (train + test) for the inference model saved to disk
+    import joblib
+    all_texts  = texts  + (test_texts  or [])
+    all_labels = labels + (test_labels or [])
+    pipeline.fit(all_texts, all_labels)
+    model_path = output_dir / "classical_model.joblib"
+    joblib.dump(pipeline, model_path)
+
     results: dict[str, Any] = {
         "model": "TF-IDF (1-2gram) + LinearSVC (class_weight=balanced)",
-        "mode": f"{cv_folds}-fold stratified cross-validation",
+        "mode": f"{cv_folds}-fold stratified cross-validation (train split)",
         "cv_folds": cv_folds,
         "f1_macro_mean": round(float(cv_scores.mean()), 4),
-        "f1_macro_std": round(float(cv_scores.std()), 4),
-        "accuracy": round(float(acc), 4),
+        "f1_macro_std":  round(float(cv_scores.std()),  4),
+        "accuracy":      round(float(acc), 4),
         "classification_report": report,
         "confusion_matrix_path": str(cm_path),
+        "model_saved_to": str(model_path),
+        **test_metrics,
     }
-    return results, y_pred
+    return results, y_pred, test_preds
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +167,8 @@ def evaluate_transformer(
     label_names = [l for l in _LABEL_ORDER if l in set(labels)]
     cm = confusion_matrix(labels, y_pred, labels=label_names, normalize="true")
     cm_path = output_dir / "confusion_matrix_transformer.png"
-    _save_confusion_matrix(cm, label_names, cm_path, f"DistilBERT (zero-shot)")
+    short_name = model_name.split("/")[-1]
+    _save_confusion_matrix(cm, label_names, cm_path, f"{short_name} (zero-shot)")
 
     results: dict[str, Any] = {
         "model": model_name,
@@ -149,6 +179,268 @@ def evaluate_transformer(
         "confusion_matrix_path": str(cm_path),
     }
     return results, y_pred
+
+
+# ---------------------------------------------------------------------------
+# Transformer model (fine-tuned, GPU/CPU)
+# ---------------------------------------------------------------------------
+
+_LABEL2ID = {"negative": 0, "positive": 1}
+_ID2LABEL = {0: "negative", 1: "positive"}
+
+
+def train_transformer_finetuned(
+    texts: list[str],
+    labels: list[str],
+    model_name: str,
+    output_dir: Path,
+    epochs: int = 3,
+    batch_size: int = 16,
+    lr: float = 2e-5,
+    test_size: float = 0.2,
+    text_max_chars: int = 1500,
+    provided_train_idx: list[int] | None = None,
+    provided_test_idx: list[int] | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Fine-tune a HuggingFace sequence classifier on the corpus.
+
+    Auto-detects CUDA. Splits texts/labels into train/test (stratified), trains
+    for `epochs` epochs, evaluates on the held-out test split, then runs
+    inference on the full corpus so per-politician stats remain aligned.
+
+    Saves the fine-tuned model + tokenizer to output_dir/finetuned_model/.
+    Returns (metrics_dict, y_pred_full) where y_pred_full aligns with all inputs.
+    """
+    import torch
+    from sklearn.model_selection import train_test_split as _split
+    from transformers import (
+        AutoModelForSequenceClassification,
+        AutoTokenizer,
+        Trainer,
+        TrainingArguments,
+    )
+    from torch.utils.data import Dataset as _TorchDataset
+
+    class _DS(_TorchDataset):
+        def __init__(self, encodings: Any, int_labels: list[int]) -> None:
+            self.encodings = encodings
+            self.labels = int_labels
+
+        def __getitem__(self, idx: int) -> dict[str, Any]:
+            item = {k: torch.tensor(v[idx]) for k, v in self.encodings.items()}
+            item["labels"] = torch.tensor(self.labels[idx])
+            return item
+
+        def __len__(self) -> int:
+            return len(self.labels)
+
+    device_name = "cuda" if torch.cuda.is_available() else "cpu"
+    use_cpu = device_name == "cpu"
+    print(f"      Dispositivo: {device_name.upper()}")
+    print(f"      Cargando tokenizer '{model_name}'...")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+    truncated = [t[:text_max_chars] for t in texts]
+    int_labels = [_LABEL2ID[l] for l in labels]
+
+    if provided_train_idx is not None and provided_test_idx is not None:
+        train_idx, test_idx = provided_train_idx, provided_test_idx
+    else:
+        indices = list(range(len(truncated)))
+        train_idx, test_idx = _split(indices, test_size=test_size, stratify=int_labels, random_state=42)
+
+    X_train = [truncated[i] for i in train_idx]
+    X_test  = [truncated[i] for i in test_idx]
+    y_train = [int_labels[i] for i in train_idx]
+    y_test  = [int_labels[i] for i in test_idx]
+    y_test_str = [_ID2LABEL[l] for l in y_test]
+
+    print(f"      Train: {len(X_train)} | Test: {len(X_test)}")
+    print(f"      Tokenizando...")
+
+    train_enc = tokenizer(X_train, truncation=True, padding=True, max_length=512)
+    test_enc  = tokenizer(X_test,  truncation=True, padding=True, max_length=512)
+    train_ds  = _DS(train_enc, y_train)
+    test_ds   = _DS(test_enc,  y_test)
+
+    print(f"      Cargando modelo '{model_name}'...")
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name, num_labels=2, id2label=_ID2LABEL, label2id=_LABEL2ID,
+        ignore_mismatched_sizes=True,
+    )
+
+    model_save_path = output_dir / "finetuned_model"
+    checkpoints_dir = output_dir / "finetune_checkpoints"
+
+    def _compute_metrics(eval_pred: Any) -> dict[str, float]:
+        logits, lbls = eval_pred
+        preds = np.argmax(logits, axis=-1)
+        pred_strs = [_ID2LABEL[int(p)] for p in preds]
+        true_strs = [_ID2LABEL[int(l)] for l in lbls]
+        return {
+            "accuracy": float(accuracy_score(true_strs, pred_strs)),
+            "f1": float(f1_score(true_strs, pred_strs, average="macro", zero_division=0)),
+        }
+
+    common_args: dict[str, Any] = dict(
+        output_dir=str(checkpoints_dir),
+        num_train_epochs=epochs,
+        per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=batch_size,
+        warmup_steps=50,
+        weight_decay=0.01,
+        learning_rate=lr,
+        save_strategy="epoch",
+        load_best_model_at_end=True,
+        metric_for_best_model="f1",
+        greater_is_better=True,
+        save_total_limit=2,
+        logging_steps=10,
+        seed=42,
+        fp16=(not use_cpu),
+        report_to="none",
+    )
+    # Handle transformers API rename: evaluation_strategy → eval_strategy (>=4.46)
+    # Also handle fp16 not supported on CPU in some versions
+    def _make_training_args(extra: dict[str, Any]) -> TrainingArguments:
+        merged = {**common_args, **extra}
+        try:
+            return TrainingArguments(**merged)
+        except (TypeError, ValueError):
+            merged.pop("fp16", None)
+            return TrainingArguments(**merged)
+
+    try:
+        training_args = _make_training_args({"eval_strategy": "epoch"})
+    except TypeError:
+        training_args = _make_training_args({"evaluation_strategy": "epoch"})
+
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_ds,
+        eval_dataset=test_ds,
+        compute_metrics=_compute_metrics,
+    )
+
+    print(f"      Fine-tuning ({epochs} epochs, lr={lr})...")
+    trainer.train()
+
+    trainer.save_model(str(model_save_path))
+    tokenizer.save_pretrained(str(model_save_path))
+    print(f"      Modelo guardado en {model_save_path}")
+
+    # Evaluate on held-out test split
+    test_out     = trainer.predict(test_ds)
+    test_pred_ids = np.argmax(test_out.predictions, axis=-1)
+    y_pred_test  = [_ID2LABEL[int(p)] for p in test_pred_ids]
+
+    acc    = accuracy_score(y_test_str, y_pred_test)
+    f1     = f1_score(y_test_str, y_pred_test, average="macro", zero_division=0)
+    report = classification_report(y_test_str, y_pred_test, output_dict=True, zero_division=0)
+
+    label_names = [l for l in _LABEL_ORDER if l in set(y_test_str)]
+    cm      = confusion_matrix(y_test_str, y_pred_test, labels=label_names, normalize="true")
+    cm_path = output_dir / "confusion_matrix_transformer.png"
+    short_name = model_name.split("/")[-1]
+    _save_confusion_matrix(cm, label_names, cm_path, f"{short_name} (fine-tuned)")
+
+    # Full-corpus predictions so per-politician stats align with all rows
+    print(f"      Infiriendo corpus completo para estadísticas por político...")
+    full_enc = tokenizer(truncated, truncation=True, padding=True, max_length=512)
+    full_ds  = _DS(full_enc, int_labels)
+    full_out = trainer.predict(full_ds)
+    y_pred_full = [_ID2LABEL[int(p)] for p in np.argmax(full_out.predictions, axis=-1)]
+
+    results: dict[str, Any] = {
+        "model": model_name,
+        "mode": f"fine-tuned ({epochs} epochs, {device_name.upper()}, test={int(test_size * 100)}%)",
+        "accuracy": round(float(acc), 4),
+        "f1_macro": round(float(f1), 4),
+        "train_size": len(X_train),
+        "test_size": len(X_test),
+        "classification_report": report,
+        "confusion_matrix_path": str(cm_path),
+        "model_saved_to": str(model_save_path),
+    }
+    return results, y_pred_full
+
+
+# ---------------------------------------------------------------------------
+# Cross-politician (leave-one-politician-out) evaluation
+# ---------------------------------------------------------------------------
+
+def cross_politician_eval(
+    texts: list[str],
+    labels: list[str],
+    politicians: list[str],
+    max_features: int,
+    cv_per_pol: dict[str, dict] | None = None,
+) -> dict[str, Any]:
+    """Leave-one-politician-out evaluation using TF-IDF + LinearSVC.
+
+    For each politician, trains on all other politicians and tests on this one.
+    Compares the out-of-distribution accuracy against the within-distribution
+    accuracy (cv_per_pol) to reveal how much the model relies on politician
+    identity as a shortcut rather than genuine tone signals.
+    """
+    unique_pols = sorted(set(politicians))
+    results: dict[str, Any] = {}
+    f1_scores: list[float] = []
+
+    pipeline_proto = Pipeline([
+        ("tfidf", TfidfVectorizer(
+            ngram_range=(1, 2),
+            max_features=max_features,
+            sublinear_tf=True,
+            min_df=2,
+            strip_accents="unicode",
+        )),
+        ("clf", LinearSVC(class_weight="balanced", max_iter=2000, random_state=42)),
+    ])
+
+    for test_pol in unique_pols:
+        mask_test  = [p == test_pol for p in politicians]
+        mask_train = [not m for m in mask_test]
+
+        X_train = [t for t, m in zip(texts,  mask_train) if m]
+        y_train = [l for l, m in zip(labels, mask_train) if m]
+        X_test  = [t for t, m in zip(texts,  mask_test)  if m]
+        y_test  = [l for l, m in zip(labels, mask_test)  if m]
+
+        if len(X_test) < 5 or len(set(y_train)) < 2:
+            continue
+
+        import copy
+        clf = copy.deepcopy(pipeline_proto)
+        clf.fit(X_train, y_train)
+        y_pred = clf.predict(X_test)
+
+        acc = accuracy_score(y_test, y_pred)
+        f1  = f1_score(y_test, y_pred, average="macro", zero_division=0)
+        f1_scores.append(f1)
+
+        entry: dict[str, Any] = {
+            "lopo_accuracy": round(float(acc), 3),
+            "lopo_f1_macro": round(float(f1),  3),
+            "n_test":        len(X_test),
+        }
+        if cv_per_pol and test_pol in cv_per_pol:
+            within = cv_per_pol[test_pol]["accuracy"]
+            entry["within_dist_accuracy"] = within
+            entry["generalization_drop"]  = round(within - float(acc), 3)
+
+        results[test_pol] = entry
+
+    return {
+        "per_politician": results,
+        "mean_lopo_f1":   round(float(np.mean(f1_scores)), 4) if f1_scores else None,
+        "interpretation": (
+            "El modelo generaliza bien a políticos no vistos."
+            if f1_scores and np.mean(f1_scores) >= 0.65
+            else "El modelo depende de señales específicas por político — generalización limitada."
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -193,8 +485,14 @@ def save_comparison_plot(
     classical_per_pol: dict[str, dict],
     transformer_per_pol: dict[str, dict],
     output_dir: Path,
+    transformer_label: str = "",
 ) -> Path:
     """Save a two-panel comparison figure (overall metrics + per-politician accuracy)."""
+    if not transformer_label:
+        short = transformer.get("model", "Transformer").split("/")[-1]
+        mode = transformer.get("mode", "")
+        transformer_label = f"{short} (fine-tuned)" if "fine-tuned" in mode else f"{short} (zero-shot)"
+
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
     # Panel 1: overall accuracy and F1
@@ -205,7 +503,7 @@ def save_comparison_plot(
     x = np.arange(len(metric_labels))
     w = 0.35
     bars_c = axes[0].bar(x - w / 2, c_vals, w, label="TF-IDF + LinearSVC", color="steelblue")
-    bars_t = axes[0].bar(x + w / 2, t_vals, w, label="DistilBERT (zero-shot)", color="darkorange")
+    bars_t = axes[0].bar(x + w / 2, t_vals, w, label=transformer_label, color="darkorange")
     axes[0].set_xticks(x)
     axes[0].set_xticklabels(metric_labels)
     axes[0].set_ylim(0, 1.1)
@@ -230,7 +528,7 @@ def save_comparison_plot(
         t_acc = [transformer_per_pol[p]["accuracy"] for p in common_pols]
         y_idx = np.arange(len(common_pols))
         axes[1].barh(y_idx - w / 2, c_acc, w, label="TF-IDF + LinearSVC", color="steelblue")
-        axes[1].barh(y_idx + w / 2, t_acc, w, label="DistilBERT (zero-shot)", color="darkorange")
+        axes[1].barh(y_idx + w / 2, t_acc, w, label=transformer_label, color="darkorange")
         axes[1].set_yticks(y_idx)
         axes[1].set_yticklabels(common_pols, fontsize=8)
         axes[1].set_xlim(0, 1.1)
@@ -242,7 +540,7 @@ def save_comparison_plot(
                      ha="center", va="center", transform=axes[1].transAxes)
         axes[1].set_title("Accuracy por político")
 
-    plt.suptitle("Comparación: Modelo Clásico vs Transformer (zero-shot)", fontsize=13)
+    plt.suptitle(f"Comparación: TF-IDF + LinearSVC  vs  {transformer_label}", fontsize=13)
     plt.tight_layout()
     path = output_dir / "comparison_plot.png"
     fig.savefig(path, dpi=150)
@@ -382,6 +680,82 @@ def compute_label_agreement(all_rows: list[ArticleRow]) -> dict[str, Any] | None
         ),
         "disagreement_examples": disagree_examples,
     }
+
+
+# ---------------------------------------------------------------------------
+# LLM (Ollama) zero-shot evaluation
+# ---------------------------------------------------------------------------
+
+def evaluate_llm(
+    texts: list[str],
+    labels: list[str],
+    politicians: list[str],
+    model_name: str,
+    output_dir: Path,
+    text_max_chars: int = 1500,
+) -> tuple[dict[str, Any], list[str]]:
+    """Evaluate a local Ollama LLM as a zero-shot tone classifier.
+
+    For each article, sends a prompt asking whether the article portrays the
+    given politician positively or negatively.  Uses temperature=0 for
+    deterministic output.  Returns (metrics_dict, y_pred).
+    """
+    import ollama
+
+    _PROMPT = (
+        "You are a media bias analyst. Read the news article below and classify "
+        "whether it portrays {politician} in a positive or negative light.\n\n"
+        "Article:\n{text}\n\n"
+        "Respond with exactly one word: positive or negative."
+    )
+
+    y_pred: list[str] = []
+    n_failed = 0
+    n = len(texts)
+
+    for i, (text, politician) in enumerate(zip(texts, politicians), 1):
+        prompt = _PROMPT.format(politician=politician, text=text[:text_max_chars])
+        try:
+            resp = ollama.chat(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0},
+            )
+            raw = resp["message"]["content"].strip().lower()
+            if "positive" in raw:
+                y_pred.append("positive")
+            elif "negative" in raw:
+                y_pred.append("negative")
+            else:
+                y_pred.append("negative")
+                n_failed += 1
+        except Exception:
+            y_pred.append("negative")
+            n_failed += 1
+
+        if i % 20 == 0 or i == n:
+            print(f"      {i}/{n} artículos procesados...")
+
+    acc    = accuracy_score(labels, y_pred)
+    f1     = f1_score(labels, y_pred, average="macro", zero_division=0)
+    report = classification_report(labels, y_pred, output_dict=True, zero_division=0)
+
+    label_names = [l for l in _LABEL_ORDER if l in set(labels)]
+    cm      = confusion_matrix(labels, y_pred, labels=label_names, normalize="true")
+    cm_path = output_dir / "confusion_matrix_llm.png"
+    _save_confusion_matrix(cm, label_names, cm_path, f"{model_name} (zero-shot LLM)")
+
+    results: dict[str, Any] = {
+        "model":              model_name,
+        "mode":               "zero-shot LLM via Ollama (temperature=0)",
+        "accuracy":           round(float(acc), 4),
+        "f1_macro":           round(float(f1),  4),
+        "n_evaluated":        n,
+        "n_failed_parse":     n_failed,
+        "classification_report": report,
+        "confusion_matrix_path": str(cm_path),
+    }
+    return results, y_pred
 
 
 # ---------------------------------------------------------------------------

@@ -103,6 +103,17 @@ class LabelSettings:
 
 
 @dataclass(frozen=True)
+class LLMCompareSettings:
+    """Runtime configuration for the LLM comparison step."""
+
+    input_path: Path
+    output_dir: Path
+    ollama_model: str = "llama3.1:8b"
+    text_max_chars: int = 1500
+    test_size: float = 0.2
+
+
+@dataclass(frozen=True)
 class TrainingSettings:
     """Runtime configuration for the tone-classification training pipeline."""
 
@@ -110,5 +121,10 @@ class TrainingSettings:
     output_dir: Path
     cv_folds: int = 5
     max_tfidf_features: int = 10_000
-    transformer_model: str = "distilbert-base-uncased-finetuned-sst-2-english"
+    transformer_model: str = "distilbert-base-uncased"
     text_max_chars: int = 1500
+    finetune: bool = True
+    finetune_epochs: int = 3
+    finetune_batch_size: int = 16
+    finetune_lr: float = 2e-5
+    finetune_test_size: float = 0.2
