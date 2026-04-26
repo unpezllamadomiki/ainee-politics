@@ -30,8 +30,8 @@ def compare_llm(settings: LLMCompareSettings) -> Path:
     if not rows:
         raise ValueError(f"No se encontraron filas en {settings.input_path}")
 
-    has_politician_tone = any(r.get("politician_tone_label") in _VALID_LABELS for r in rows)
-    tone_field = "politician_tone_label" if has_politician_tone else "gdelt_tone_label"
+    has_gdelt_tone = any(r.get("gdelt_tone_label") in _VALID_LABELS for r in rows)
+    tone_field = "gdelt_tone_label" if has_gdelt_tone else "politician_tone_label"
 
     valid      = [r for r in rows if r.get(tone_field) in _VALID_LABELS]
     texts      = [r.get("text") or r.get("content") or "" for r in valid]

@@ -12,6 +12,7 @@ data/*.joblib
 # Corpus data (regenerate with build-corpus / prepare-dataset)
 data/*.jsonl
 data/*.csv
+data/chroma_politics_news/
 
 # Keep plots and training report
 !data/*.png

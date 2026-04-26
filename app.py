@@ -12,6 +12,8 @@ DATA_DIR = Path("data")
 REPORT_PATH = DATA_DIR / "training_report.json"
 TRANSFORMER_MODEL_DIR = DATA_DIR / "finetuned_model"
 CLASSICAL_MODEL_PATH = DATA_DIR / "classical_model.joblib"
+LABELED_CORPUS_PATH = DATA_DIR / "corpus_labeled.jsonl"
+RAG_VECTOR_DIR = DATA_DIR / "chroma_politics_news"
 
 st.set_page_config(
     page_title="Ainee Politics — Bias Dashboard",
@@ -99,6 +101,17 @@ def _tone_badge(label: str) -> str:
     return "🟢 POSITIVO" if label == "positive" else "🔴 NEGATIVO"
 
 
+@st.cache_resource
+def load_news_vector_store(embedding_model_name: str):
+    from ainee_politics.infrastructure.nlp.rag import build_vector_store
+
+    return build_vector_store(
+        corpus_path=LABELED_CORPUS_PATH,
+        persist_dir=RAG_VECTOR_DIR,
+        embedding_model_name=embedding_model_name,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Data
 # ---------------------------------------------------------------------------
@@ -107,8 +120,8 @@ report = load_report()
 
 st.title("📰 Ainee Politics — Análisis de Sesgo Mediático")
 st.caption(
-    "Detección de sesgos ideológicos, emocionales y de representación "
-    "en artículos de noticias políticas internacionales."
+    "Análisis del tono positivo o negativo de noticias políticas internacionales "
+    "y exploración del corpus por político."
 )
 
 if not report:
@@ -123,6 +136,7 @@ transformer = report.get("transformer_model", {})
 comparison = report.get("comparison", {})
 corpus = report.get("corpus_stats", {})
 agreement = report.get("label_agreement_gdelt_vs_politician")
+tone_label_field = corpus.get("tone_label_field", "unknown")
 
 transformer_name = transformer.get("model", "Transformer")
 transformer_mode = transformer.get("mode", "")
@@ -132,7 +146,9 @@ transformer_label = (
     else f"{transformer_name} (zero-shot)"
 )
 
-tab_dashboard, tab_predict = st.tabs(["📊 Dashboard de Resultados", "🔍 Predicción en Tiempo Real"])
+tab_dashboard, tab_predict, tab_rag = st.tabs(
+    ["📊 Dashboard de Resultados", "🔍 Predicción en Tiempo Real", "💬 Chatbot RAG"]
+)
 
 
 # ===========================================================================
@@ -142,6 +158,7 @@ with tab_dashboard:
 
     # --- Corpus overview ---
     st.subheader("Corpus")
+    st.caption(f"Etiqueta objetivo activa en este reporte: `{tone_label_field}`")
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Artículos totales", corpus.get("total_labeled_articles", "—"))
     c2.metric("Usados para entrenar", corpus.get("used_for_training", "—"))
@@ -168,12 +185,22 @@ with tab_dashboard:
 
     with col_c:
         st.markdown("#### TF-IDF (1-2gram) + LinearSVC")
-        st.caption(f"{classical.get('cv_folds', 5)}-fold stratified cross-validation · {corpus.get('used_for_training', '—')} artículos")
+        st.caption(
+            f"Test set compartido: {corpus.get('test_size', classical.get('test_set_size', '—'))} artículos · "
+            f"CV auxiliar: {classical.get('cv_folds', 5)} folds sobre train"
+        )
         m1, m2 = st.columns(2)
-        m1.metric("F1-Macro", f"{classical.get('f1_macro_mean', 0):.4f}", f"±{classical.get('f1_macro_std', 0):.4f} std")
-        m2.metric("Accuracy", f"{classical.get('accuracy', 0):.4f}")
+        m1.metric(
+            "F1-Macro",
+            f"{comparison.get('classical_test_f1_macro', classical.get('test_set_f1_macro', classical.get('f1_macro_mean', 0))):.4f}",
+            f"CV train: {classical.get('f1_macro_mean', 0):.4f} ±{classical.get('f1_macro_std', 0):.4f}",
+        )
+        m2.metric(
+            "Accuracy",
+            f"{comparison.get('classical_test_accuracy', classical.get('test_set_accuracy', classical.get('accuracy', 0))):.4f}",
+        )
 
-        cr = classical.get("classification_report", {})
+        cr = classical.get("test_set_classification_report") or classical.get("classification_report", {})
         if cr:
             rows_cr = []
             for lbl in ("negative", "positive", "macro avg"):
@@ -193,9 +220,19 @@ with tab_dashboard:
         test_sz = transformer.get("test_size", "—")
         st.caption(f"Train: {train_sz} · Test: {test_sz} · {transformer_mode}")
         m1, m2 = st.columns(2)
-        delta_f1 = transformer.get("f1_macro", 0) - classical.get("f1_macro_mean", 0)
-        m1.metric("F1-Macro", f"{transformer.get('f1_macro', 0):.4f}", f"{delta_f1:+.4f} vs TF-IDF")
-        m2.metric("Accuracy", f"{transformer.get('accuracy', 0):.4f}")
+        delta_f1 = comparison.get(
+            "transformer_f1_macro",
+            transformer.get("f1_macro", 0),
+        ) - comparison.get("classical_test_f1_macro", classical.get("test_set_f1_macro", 0))
+        m1.metric(
+            "F1-Macro",
+            f"{comparison.get('transformer_f1_macro', transformer.get('f1_macro', 0)):.4f}",
+            f"{delta_f1:+.4f} vs TF-IDF test",
+        )
+        m2.metric(
+            "Accuracy",
+            f"{comparison.get('transformer_accuracy', transformer.get('accuracy', 0)):.4f}",
+        )
 
         cr_t = transformer.get("classification_report", {})
         if cr_t:
@@ -369,7 +406,7 @@ with tab_dashboard:
 # TAB 2 — INFERENCE
 # ===========================================================================
 with tab_predict:
-    st.subheader("¿Cómo retrata este artículo al político?")
+    st.subheader("Tono del artículo y menciones al político")
     st.caption(
         "El análisis se centra en las frases que mencionan directamente al político seleccionado, "
         "igual que el proceso de etiquetado del corpus. Pega el texto o usa el fetch de URL."
@@ -515,7 +552,7 @@ with tab_predict:
                     # --- Secondary: ML classifiers on full article ---
                     st.subheader("Clasificadores ML")
                     st.caption(
-                        "Tono general del artículo completo — la distribución con la que fueron entrenados."
+                        "Predicción del tono general del artículo completo, usando la etiqueta binaria positiva/negativa del corpus."
                     )
                     classifier_input = article_text
                     label_t = pred_c = None
@@ -524,7 +561,11 @@ with tab_predict:
 
                     with col_transformer:
                         st.markdown(f"#### {transformer_label}")
-                        if not TRANSFORMER_MODEL_DIR.exists():
+                        if "fine-tuned" not in transformer_mode:
+                            st.info(
+                                "El reporte actual usa transformer zero-shot; no hay modelo fine-tuned guardado para inferencia en tiempo real."
+                            )
+                        elif not TRANSFORMER_MODEL_DIR.exists():
                             st.info("Modelo no encontrado. Ejecuta `train-model` primero.")
                         else:
                             try:
@@ -570,3 +611,137 @@ with tab_predict:
                                 f"⚠️ Resultados mixtos — mayoría: **{_tone_badge(vote)}** "
                                 f"({vote_count}/{len(all_labels)})"
                             )
+
+
+# ===========================================================================
+# TAB 3 — RAG CHATBOT
+# ===========================================================================
+with tab_rag:
+    st.subheader("Chatbot RAG sobre noticias políticas")
+    st.caption(
+        "Construye una base vectorial del corpus etiquetado y responde preguntas "
+        "solo con la información de las noticias, siguiendo el enfoque de chunking + retrieval del notebook de conceptos avanzados."
+    )
+
+    if not LABELED_CORPUS_PATH.exists():
+        st.error(
+            "No se encontró `data/corpus_labeled.jsonl`. Ejecuta primero: "
+            "`python main.py label-corpus --input data/corpus_politicos_clean.jsonl`"
+        )
+    else:
+        rag_politician_options = ["Todos"] + politician_names
+        col_filter, col_model, col_actions = st.columns([2, 2, 1])
+
+        with col_filter:
+            rag_politician = st.selectbox(
+                "Filtrar por político",
+                rag_politician_options,
+                key="rag_politician",
+            )
+
+        with col_model:
+            rag_model_name = st.text_input(
+                "Modelo Ollama para responder",
+                value="llama3.1:8b",
+                key="rag_model_name",
+            )
+
+        with col_actions:
+            st.write("")
+            rebuild_index = st.button("Reindexar", use_container_width=True)
+            clear_chat = st.button("Limpiar chat", use_container_width=True)
+
+        if clear_chat:
+            st.session_state["rag_messages"] = []
+
+        if rebuild_index:
+            load_news_vector_store.clear()
+
+        try:
+            with st.spinner("Preparando base vectorial del corpus..."):
+                vector_store, rag_stats = load_news_vector_store(
+                    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+                )
+        except Exception as exc:
+            st.error(
+                "No se pudo inicializar el chatbot RAG. Instala las nuevas dependencias con "
+                "`pip install -r requirements.txt` y asegúrate de que Ollama está disponible.\n\n"
+                f"Detalle: {exc}"
+            )
+        else:
+            st.info(
+                f"Corpus indexado: {rag_stats['articles_indexed']} artículos · "
+                f"chunks nuevos en esta carga: {rag_stats['chunks_added']}"
+            )
+
+            if "rag_messages" not in st.session_state:
+                st.session_state["rag_messages"] = []
+
+            for message in st.session_state["rag_messages"]:
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
+                    if message["role"] == "assistant" and message.get("sources"):
+                        with st.expander("Fuentes usadas"):
+                            for source in message["sources"]:
+                                title = source["title"]
+                                url = source["url"]
+                                domain = source["domain"]
+                                politician = source["politician"]
+                                tone = source["tone_label"]
+                                snippet = source["snippet"]
+                                if url:
+                                    st.markdown(f"**[{source['rank']}] [{title}]({url})**")
+                                else:
+                                    st.markdown(f"**[{source['rank']}] {title}**")
+                                st.caption(f"{domain} · {politician} · tono {tone}")
+                                st.write(snippet)
+
+            prompt = st.chat_input(
+                "Pregunta algo sobre el corpus político o pide en qué noticias aparece un político...",
+                key="rag_prompt",
+            )
+
+            if prompt:
+                st.session_state["rag_messages"].append({"role": "user", "content": prompt})
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+
+                with st.chat_message("assistant"):
+                    with st.spinner("Recuperando noticias relevantes y redactando respuesta..."):
+                        from ainee_politics.infrastructure.nlp.rag import answer_question
+
+                        rag_response = answer_question(
+                            prompt,
+                            vector_store=vector_store,
+                            ollama_model=rag_model_name,
+                            chat_history=st.session_state["rag_messages"][:-1],
+                            politician=None if rag_politician == "Todos" else rag_politician,
+                        )
+
+                    if rag_response.get("error"):
+                        st.warning(rag_response["answer"])
+                    else:
+                        st.markdown(rag_response["answer"])
+                    if rag_response["sources"]:
+                        with st.expander("Fuentes usadas", expanded=True):
+                            for source in rag_response["sources"]:
+                                title = source["title"]
+                                url = source["url"]
+                                domain = source["domain"]
+                                politician = source["politician"]
+                                tone = source["tone_label"]
+                                snippet = source["snippet"]
+                                if url:
+                                    st.markdown(f"**[{source['rank']}] [{title}]({url})**")
+                                else:
+                                    st.markdown(f"**[{source['rank']}] {title}**")
+                                st.caption(f"{domain} · {politician} · tono {tone}")
+                                st.write(snippet)
+
+                st.session_state["rag_messages"].append(
+                    {
+                        "role": "assistant",
+                        "content": rag_response["answer"],
+                        "sources": rag_response["sources"],
+                    }
+                )

@@ -34,10 +34,10 @@ def _has_cuda() -> bool:
 def train_model(settings: TrainingSettings) -> Path:
     """Train TF-IDF+LinearSVC and evaluate DistilBERT (zero-shot) on tone classification.
 
-    Auto-detects the best available tone label:
-    - ``politician_tone_label`` (preferred): VADER on politician-mentioning sentences,
-      produced by the ``label-corpus`` step.  More precise for bias detection.
-    - ``gdelt_tone_label`` (fallback): article-level tone from GDELT.
+    Uses article-level GDELT tone by default:
+    - ``gdelt_tone_label`` (preferred): positive/negative tone of the full article.
+    - ``politician_tone_label`` (fallback): VADER on politician-mentioning sentences
+      when GDELT tone is unavailable.
 
     Outputs a verbose console report, PNG confusion matrices, a comparison plot,
     and a JSON report to ``settings.output_dir/training_report.json``.
@@ -51,21 +51,21 @@ def train_model(settings: TrainingSettings) -> Path:
     if not rows:
         raise ValueError(f"No se encontraron filas en {settings.input_path}")
 
-    # Auto-detect tone label field
-    has_politician_tone = any(
-        r.get("politician_tone_label") in _VALID_LABELS for r in rows
+    # Use article-level tone by default; only fall back if GDELT tone is missing.
+    has_gdelt_tone = any(
+        r.get("gdelt_tone_label") in _VALID_LABELS for r in rows
     )
-    if has_politician_tone:
-        tone_field = "politician_tone_label"
-        print(
-            "[INFO] Usando 'politician_tone_label' (VADER sobre frases con el político).\n"
-            "       Esta etiqueta refleja cómo se retrata al político específicamente."
-        )
-    else:
+    if has_gdelt_tone:
         tone_field = "gdelt_tone_label"
         print(
-            "[AVISO] 'politician_tone_label' no encontrado — usando 'gdelt_tone_label' (tono del artículo completo).\n"
-            "        Para mejor precisión, ejecuta primero: python main.py label-corpus"
+            "[INFO] Usando 'gdelt_tone_label' (tono del artículo completo según GDELT).\n"
+            "       Esta etiqueta mide si la noticia tiene tono positivo o negativo en conjunto."
+        )
+    else:
+        tone_field = "politician_tone_label"
+        print(
+            "[AVISO] 'gdelt_tone_label' no encontrado — usando 'politician_tone_label' como respaldo.\n"
+            "        Ejecuta primero el pipeline completo de corpus para entrenar con tono de noticia."
         )
 
     valid = [r for r in rows if r.get(tone_field) in _VALID_LABELS]

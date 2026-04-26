@@ -1,10 +1,10 @@
 # Ainee Politics
 
-Proyecto modular para construir un corpus de noticias políticas en inglés usando [GDELT](https://www.gdeltproject.org/), etiquetarlo con análisis de sentimiento orientado a entidades y entrenar modelos de clasificación de tono para detección de sesgo mediático.
+Proyecto modular para construir un corpus de noticias políticas en inglés usando [GDELT](https://www.gdeltproject.org/), etiquetarlo y entrenar modelos de clasificación binaria del tono de la noticia, además de consultar en qué noticias aparece cada político.
 
 ## Objetivo
 
-Detectar sesgo en noticias digitales sobre políticos internacionales analizando cómo los medios retratan a cada político: tono positivo o negativo en las frases que lo mencionan directamente.
+Medir si una noticia política tiene tono positivo o negativo a nivel de artículo y permitir explorar en qué noticias aparece cada político dentro del corpus.
 
 ## Resultados (última ejecución)
 
@@ -216,7 +216,7 @@ ainee_politics/
 ## Notas
 
 - GDELT aplica rate limiting de ~5 segundos. No reducir `--gdelt-min-interval`.
-- `politician_tone_label` (VADER por frases) es más preciso que `gdelt_tone_label` (V2Tone del artículo completo) porque mide cómo se retrata al político específicamente.
+- El entrenamiento usa `gdelt_tone_label` como objetivo principal para medir el tono general de la noticia; `politician_tone_label` queda como enriquecimiento adicional del corpus.
 - El fine-tuning con GPU (CUDA) es significativamente más rápido (~15 min vs varias horas en CPU).
 - Los modelos entrenados (`finetuned_model/`, `*.joblib`) no se versionan en git — son regenerables con `train-model`.
 - Para añadir políticos: editar `DEFAULT_POLITICIANS` en `domain/catalog.py`.
