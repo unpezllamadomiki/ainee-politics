@@ -10,12 +10,12 @@ Medir si una noticia política tiene tono positivo o negativo a nivel de artícu
 
 | Modelo | F1-Macro (test) | Accuracy (test) |
 |---|---|---|
-| TF-IDF + LinearSVC | **0.8561** | **0.8596** |
-| RoBERTa (fine-tuned, 3 epochs) | 0.7623 | 0.7632 |
-| Llama 3.1 8B zero-shot (Ollama) | 0.5529 | 0.6053 |
+| TF-IDF + LinearSVC | **0.8008** | **0.8911** |
+| DistilBERT (fine-tuned, 3 epochs) | 0.7649 | 0.8911 |
+| Llama 3.1 8B (zero-shot, Ollama) | 0.5948 | 0.7525 |
 
-- **Corpus:** 570 artículos binarios (positive/negative), 12 políticos, split 80/20 compartido entre modelos
-- **Evaluación cross-político (LOPO):** F1-Macro medio = 0.5231 — el modelo depende de señales específicas por político, generalización limitada
+- **Corpus:** 2,104 artículos etiquetados (1,006 usados para entrenamiento), 13 políticos, split 80/20 (train 804 / test 202)
+- **Evaluación cross-político (LOPO):** F1-Macro medio = 0.6109 — el modelo depende de señales específicas por político, generalización limitada
 
 ## Pipeline completo
 
@@ -98,7 +98,7 @@ Salida: `data/corpus_labeled.jsonl`, `data/corpus_labeled.csv`
 
 ## Paso 4 — Entrenar y comparar modelos
 
-Entrena TF-IDF + LinearSVC y hace fine-tuning de un transformer (RoBERTa por defecto) sobre el mismo split 80/20:
+Entrena TF-IDF + LinearSVC y hace fine-tuning de un transformer (DistilBERT por defecto) sobre el mismo split 80/20:
 
 ```bash
 python main.py train-model --input data/corpus_labeled.jsonl

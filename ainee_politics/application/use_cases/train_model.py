@@ -162,7 +162,7 @@ def train_model(settings: TrainingSettings) -> Path:
     print(_SEP)
 
     if settings.finetune:
-        transformer_results, transformer_preds = train_transformer_finetuned(
+        transformer_results, transformer_preds_full, transformer_preds_test = train_transformer_finetuned(
             texts=texts,
             labels=labels,
             model_name=settings.transformer_model,
@@ -175,6 +175,17 @@ def train_model(settings: TrainingSettings) -> Path:
             provided_train_idx=train_idx,
             provided_test_idx=test_idx,
         )
+
+        # Per-politician stats: prefer out-of-sample (test) for comparison/plotting
+        test_rows = [valid[i] for i in test_idx]
+        test_labels = [labels[i] for i in test_idx]
+        transformer_per_pol_test = per_politician_stats(test_rows, test_labels, transformer_preds_test)
+        # Keep full-corpus (in-sample) stats for reference but mark them separately
+        transformer_per_pol_full = per_politician_stats(valid, labels, transformer_preds_full)
+        transformer_results["per_politician"] = transformer_per_pol_test
+        transformer_results["per_politician_full"] = transformer_per_pol_full
+        transformer_per_pol = transformer_per_pol_test
+        _print_model_report(transformer_results, per_pol=transformer_per_pol_test)
     else:
         transformer_results, transformer_preds = evaluate_transformer(
             texts=texts,
@@ -183,9 +194,9 @@ def train_model(settings: TrainingSettings) -> Path:
             output_dir=settings.output_dir,
             text_max_chars=settings.text_max_chars,
         )
-    transformer_per_pol = per_politician_stats(valid, labels, transformer_preds)
-    transformer_results["per_politician"] = transformer_per_pol
-    _print_model_report(transformer_results, per_pol=transformer_per_pol)
+        transformer_per_pol = per_politician_stats(valid, labels, transformer_preds)
+        transformer_results["per_politician"] = transformer_per_pol
+        _print_model_report(transformer_results, per_pol=transformer_per_pol)
 
     # ------------------------------------------------------------------
     # Comparison (using shared test-set metrics)

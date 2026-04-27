@@ -363,7 +363,7 @@ def train_transformer_finetuned(
         "confusion_matrix_path": str(cm_path),
         "model_saved_to": str(model_save_path),
     }
-    return results, y_pred_full
+    return results, y_pred_full, y_pred_test
 
 
 # ---------------------------------------------------------------------------
